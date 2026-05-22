@@ -100,24 +100,7 @@ else
         "make -C \"$PROJECT_ROOT\" dist"
 fi
 
-# ── Sync package.json version ─────────────────────────────────────────────────
-sync_version() {
-    local pkg="$PROJECT_ROOT/package.json"
-    local current
-    current=$(jq -r '.version' "$pkg")
-    if [ "$NPM_VERSION" = "$current" ]; then
-        info "package.json version already matches ${NPM_VERSION}."
-    else
-        info "Updating package.json version: ${current} → ${NPM_VERSION}"
-        local tmp
-        tmp=$(mktemp)
-        jq --arg v "$NPM_VERSION" '.version = $v' "$pkg" > "$tmp"
-        mv "$tmp" "$pkg"
-        success "package.json version updated"
-    fi
-}
-
-run_step "Syncing version" "sync_version"
+# ── (version is injected temporarily during patch_package_json below) ────────
 
 # ── Upload to git-based release repo (optional) ──────────────────────────────
 upload_to_git_repo() {
@@ -189,51 +172,44 @@ else
 fi
 
 # ── Patch package.json for publish ────────────────────────────────────────────
-PACKAGE_PATCHED=0
 PACKAGE_BACKUP=""
 
 patch_package_json() {
     local pkg="$PROJECT_ROOT/package.json"
 
-    local changed=0
+    PACKAGE_BACKUP=$(mktemp)
+    cp "$pkg" "$PACKAGE_BACKUP"
+
     local tmp
     tmp=$(mktemp)
     cp "$pkg" "$tmp"
 
+    # Always inject version from git tag (temporary, not committed)
+    jq --arg v "$NPM_VERSION" '.version = $v' "$tmp" > "${tmp}.new" && mv "${tmp}.new" "$tmp"
+    info "  version → ${NPM_VERSION}"
+
     if [ -n "${OCR_PKG_NAME:-}" ]; then
         jq --arg n "$OCR_PKG_NAME" '.name = $n' "$tmp" > "${tmp}.new" && mv "${tmp}.new" "$tmp"
         info "  name → ${OCR_PKG_NAME}"
-        changed=1
     fi
 
     if [ -n "${OCR_PUBLISH_REGISTRY:-}" ]; then
         jq --arg r "$OCR_PUBLISH_REGISTRY" '.publishConfig.registry = $r | .publishConfig.access = "public"' "$tmp" > "${tmp}.new" && mv "${tmp}.new" "$tmp"
         info "  publishConfig.registry → ${OCR_PUBLISH_REGISTRY}"
-        changed=1
     fi
 
     if [ -n "${OCR_URL_PATTERN:-}" ]; then
         jq --arg u "$OCR_URL_PATTERN" '.ocrConfig.urlPattern = $u' "$tmp" > "${tmp}.new" && mv "${tmp}.new" "$tmp"
         info "  ocrConfig.urlPattern → ${OCR_URL_PATTERN}"
-        changed=1
     fi
 
     if [ -n "${OCR_CHECKSUM_PATTERN:-}" ]; then
         jq --arg c "$OCR_CHECKSUM_PATTERN" '.ocrConfig.checksumPattern = $c' "$tmp" > "${tmp}.new" && mv "${tmp}.new" "$tmp"
         info "  ocrConfig.checksumPattern → ${OCR_CHECKSUM_PATTERN}"
-        changed=1
     fi
 
-    if [ "$changed" -eq 1 ]; then
-        PACKAGE_BACKUP=$(mktemp)
-        cp "$pkg" "$PACKAGE_BACKUP"
-        mv "$tmp" "$pkg"
-        PACKAGE_PATCHED=1
-        success "package.json patched for publish"
-    else
-        rm -f "$tmp"
-        info "No overrides configured, publishing with default package.json"
-    fi
+    mv "$tmp" "$pkg"
+    success "package.json patched for publish"
 }
 
 run_step "Patching package.json" "patch_package_json"
@@ -270,20 +246,11 @@ else
 fi
 
 # ── Restore package.json ─────────────────────────────────────────────────────
-if [ "$PACKAGE_PATCHED" -eq 1 ] && [ -n "$PACKAGE_BACKUP" ]; then
+if [ -n "$PACKAGE_BACKUP" ]; then
     cp "$PACKAGE_BACKUP" "$PROJECT_ROOT/package.json"
     rm -f "$PACKAGE_BACKUP"
-    success "package.json restored (version bump preserved)"
+    success "package.json restored"
     echo ""
-fi
-
-# ── Commit version bump (if version was synced) ──────────────────────────────
-git add package.json 2>/dev/null || true
-if ! git diff --cached --quiet 2>/dev/null; then
-    git commit -m "chore(release): bump version to ${VERSION_TAG}"
-    success "Committed version bump"
-else
-    info "No version changes to commit."
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────

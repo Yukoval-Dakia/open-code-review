@@ -1,6 +1,6 @@
 {
   "name": "@alibaba-group/open-code-review",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "description": "OpenCodeReview CLI — AI-powered code review tool",
   "bin": {
     "ocr": "bin/ocr.js"
