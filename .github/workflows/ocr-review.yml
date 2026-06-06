@@ -1,11 +1,10 @@
-# OpenCodeReview - PR Auto-Review (self-hosted runner + Codex subscription)
+# OpenCodeReview - PR Auto-Review (self-hosted runner + opencode-go API)
 #
 # Runs on a self-hosted macOS runner where:
-#   - `codex` CLI is installed and logged in via ChatGPT subscription
-#   - a prebuilt `ocr` binary (with the codex provider) lives at ~/.local/bin/ocr
+#   - a prebuilt `ocr` binary lives at ~/.local/bin/ocr
 #
-# No LLM secrets required: OCR_LLM_PROTOCOL=codex delegates auth to the
-# local Codex CLI session (~/.codex/auth.json), which self-refreshes.
+# LLM endpoint is opencode-go (OpenAI-compatible): URL/model come from
+# repository variables, the API token from the OCR_LLM_TOKEN secret.
 #
 # Triggers:
 #   - PR opened
@@ -23,8 +22,7 @@ permissions:
   contents: read
   pull-requests: write
 
-# Codex account auth must not be shared across concurrent jobs
-# (single-ownership requirement for ChatGPT-managed auth). Serialize all runs.
+# Serialize runs to keep load on the single self-hosted runner predictable.
 concurrency:
   group: ocr-review
   cancel-in-progress: false
@@ -62,15 +60,18 @@ jobs:
           fetch-depth: 0  # Full history needed for merge-base diff
           ref: ${{ github.event_name != 'pull_request' && steps.pr-context.outputs.head_sha || '' }}
 
-      - name: Set up PATH for ocr and codex
+      - name: Set up PATH for ocr
         run: |
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
 
-      - name: Run OpenCodeReview (codex backend)
+      - name: Run OpenCodeReview (opencode-go backend)
         id: review
         env:
-          OCR_LLM_PROTOCOL: codex
+          OCR_LLM_PROTOCOL: openai
+          OCR_LLM_URL: ${{ vars.OCR_LLM_URL }}
+          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
+          OCR_LLM_MODEL: ${{ vars.OCR_LLM_MODEL }}
         run: |
           # Get base and head refs from PR context (different for comment triggers)
           if [ "${{ github.event_name }}" = "pull_request" ]; then
