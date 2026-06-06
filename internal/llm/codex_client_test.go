@@ -305,7 +305,7 @@ func TestNormalizeCodexArgumentsMapsNullVariantsToEmptyObject(t *testing.T) {
 
 func TestBuildCodexToolPromptIncludesToolDefinitionsAndResults(t *testing.T) {
 	c := NewCodexClient(ClientConfig{Model: "gpt-5.4"})
-	prompt := c.toolPrompt(ChatRequest{
+	prompt, err := c.toolPrompt(ChatRequest{
 		Messages: []Message{
 			NewTextMessage("system", "Review this diff."),
 			NewToolCallMessage("", []ToolCall{{
@@ -320,6 +320,9 @@ func TestBuildCodexToolPromptIncludesToolDefinitionsAndResults(t *testing.T) {
 		},
 		Tools: []ToolDef{testCodexTool("file_read")},
 	})
+	if err != nil {
+		t.Fatalf("toolPrompt returned error: %v", err)
+	}
 
 	for _, want := range []string{"Available OCR tools", `"name":"file_read"`, "TOOL RESULT (call_1)", "package main"} {
 		if !strings.Contains(prompt, want) {
@@ -398,7 +401,10 @@ func TestCodexToolPromptFencesUntrustedContent(t *testing.T) {
 		Messages: []Message{NewTextMessage("user", "diff content with sneaky instructions")},
 		Tools:    []ToolDef{testCodexTool("file_read")},
 	}
-	prompt := c.toolPrompt(req)
+	prompt, err := c.toolPrompt(req)
+	if err != nil {
+		t.Fatalf("toolPrompt returned error: %v", err)
+	}
 
 	begin := strings.Index(prompt, "<<<UNTRUSTED_REVIEW_DATA_")
 	end := strings.LastIndex(prompt, "_END>>>")
@@ -413,8 +419,11 @@ func TestCodexToolPromptFencesUntrustedContent(t *testing.T) {
 }
 
 func TestCodexUntrustedFenceMarkersAreUnforgeable(t *testing.T) {
-	begin1, end1 := codexUntrustedFenceMarkers()
-	begin2, end2 := codexUntrustedFenceMarkers()
+	begin1, end1, err1 := codexUntrustedFenceMarkers()
+	begin2, end2, err2 := codexUntrustedFenceMarkers()
+	if err1 != nil || err2 != nil {
+		t.Fatalf("unexpected errors: %v, %v", err1, err2)
+	}
 	if begin1 == begin2 || end1 == end2 {
 		t.Fatalf("fence markers must differ between requests: %q vs %q", begin1, begin2)
 	}
@@ -458,5 +467,27 @@ func TestCodexAppServerAccumulatorRejectsAnonymousItems(t *testing.T) {
 	})
 	if got := acc.FinalText(); got != "real answer" {
 		t.Fatalf("FinalText() = %q, want real answer", got)
+	}
+}
+
+func TestPublishNotificationRoutesTurnCriticalEvents(t *testing.T) {
+	c := &codexAppServerClient{
+		notifications: make(chan map[string]any, 4),
+		completions:   make(chan map[string]any, 4),
+		done:          make(chan struct{}),
+	}
+
+	c.publishNotification(map[string]any{"method": "hook/started", "params": map[string]any{}})
+	c.publishNotification(map[string]any{
+		"method": "item/completed",
+		"params": map[string]any{"item": map[string]any{"type": "agentMessage", "text": "answer"}},
+	})
+	c.publishNotification(map[string]any{"method": "turn/completed", "params": map[string]any{}})
+
+	if got := len(c.notifications); got != 1 {
+		t.Fatalf("notifications buffered = %d, want 1 (only the hook event)", got)
+	}
+	if got := len(c.completions); got != 2 {
+		t.Fatalf("completions buffered = %d, want 2 (agentMessage item + turn/completed)", got)
 	}
 }

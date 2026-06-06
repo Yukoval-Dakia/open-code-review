@@ -48,9 +48,10 @@ type codexAppServerClient struct {
 	nextID        int64
 	pending       map[int64]chan codexAppServerResponse
 	notifications chan map[string]any
-	// completions carries turn/completed events on a dedicated channel so the
-	// completion signal can never be displaced by overflow in the general
-	// notification buffer. Turns are serialized, so a small capacity suffices.
+	// completions carries turn/completed and agentMessage item events on a
+	// dedicated channel so neither the completion signal nor the final answer
+	// can be displaced by overflow in the general notification buffer. Turns
+	// are serialized and emit few such events, so a small capacity suffices.
 	completions chan map[string]any
 
 	done    chan struct{} // closed when readLoop exits (process died or closed stdout)
@@ -107,7 +108,7 @@ func startCodexAppServer(ctx context.Context) (*codexAppServerClient, error) {
 		activeSlot:    make(chan struct{}, 1),
 		pending:       make(map[int64]chan codexAppServerResponse),
 		notifications: make(chan map[string]any, 128),
-		completions:   make(chan map[string]any, 8),
+		completions:   make(chan map[string]any, 32),
 		done:          make(chan struct{}),
 	}
 	go c.readLoop(stdout)
@@ -153,7 +154,14 @@ func (c *codexAppServerClient) Complete(ctx context.Context, req codexAppServerC
 	case <-c.done:
 		return "", c.exitError()
 	}
-	defer func() { <-c.activeSlot }()
+	// On cancellation the slot is handed off to the interrupt goroutine, so a
+	// new turn cannot start while the previous one is still being stopped.
+	slotHandedOff := false
+	defer func() {
+		if !slotHandedOff {
+			<-c.activeSlot
+		}
+	}()
 
 	// Discard notifications left over from earlier canceled/timed-out turns so
 	// they cannot contaminate this completion.
@@ -180,7 +188,8 @@ func (c *codexAppServerClient) Complete(ctx context.Context, req codexAppServerC
 		// running and emitting notifications in the background. The turn id is
 		// unknown on this path, so the interrupt carries only the thread id.
 		if ctx.Err() != nil {
-			c.interruptTurn(threadID, "")
+			slotHandedOff = true
+			c.interruptTurnThenReleaseSlot(threadID, "")
 		}
 		return "", fmt.Errorf("codex app-server turn/start: %w", err)
 	}
@@ -190,7 +199,8 @@ func (c *codexAppServerClient) Complete(ctx context.Context, req codexAppServerC
 		var msg map[string]any
 		select {
 		case <-ctx.Done():
-			c.interruptTurn(threadID, turnID)
+			slotHandedOff = true
+			c.interruptTurnThenReleaseSlot(threadID, turnID)
 			return "", ctx.Err()
 		case <-c.done:
 			return "", c.exitError()
@@ -213,11 +223,14 @@ func (c *codexAppServerClient) Complete(ctx context.Context, req codexAppServerC
 }
 
 // consumePendingItems applies notifications already buffered at completion
-// time, without blocking for new ones.
+// time, without blocking for new ones. Both channels are drained: the final
+// answer may sit on either depending on routing.
 func (c *codexAppServerClient) consumePendingItems(acc *codexAppServerTurnAccumulator) {
 	for {
 		select {
 		case msg := <-c.notifications:
+			acc.HandleNotification(msg)
+		case msg := <-c.completions:
 			acc.HandleNotification(msg)
 		default:
 			return
@@ -225,13 +238,17 @@ func (c *codexAppServerClient) consumePendingItems(acc *codexAppServerTurnAccumu
 	}
 }
 
-// interruptTurn asks the app-server to stop the active turn so it does not
-// keep running (and emitting notifications) after the caller gave up.
-// Best-effort: it runs detached from the caller's already-canceled context.
-// The turn id (observed in turn/start responses as result.turn.id) is included
-// when known, since interrupt handling may require both identifiers.
-func (c *codexAppServerClient) interruptTurn(threadID, turnID string) {
+// interruptTurnThenReleaseSlot asks the app-server to stop the active turn so
+// it does not keep running (and emitting notifications) after the caller gave
+// up. Best-effort: it runs detached from the caller's already-canceled
+// context. The turn id (observed in turn/start responses as result.turn.id)
+// is included when known, since interrupt handling may require both
+// identifiers. The goroutine owns the active-turn slot and releases it only
+// after the interrupt settles, so the next Complete cannot overlap a turn
+// that is still being stopped.
+func (c *codexAppServerClient) interruptTurnThenReleaseSlot(threadID, turnID string) {
 	go func() {
+		defer func() { <-c.activeSlot }()
 		ctx, cancel := context.WithTimeout(context.Background(), codexAppServerInterruptTimeout)
 		defer cancel()
 		params := map[string]any{"threadId": threadID}
@@ -399,12 +416,12 @@ func (c *codexAppServerClient) readLoop(stdout io.Reader) {
 	close(c.done)
 }
 
-// publishNotification enqueues a protocol notification. turn/completed goes
-// to the dedicated completions channel, so the completion signal can never be
-// displaced; for the rest, the oldest entry is dropped on overflow instead of
-// the newest, because late events (such as the final answer) matter most.
+// publishNotification enqueues a protocol notification. Turn-critical events
+// (turn/completed and agentMessage items, which carry the final answer) go to
+// the dedicated completions channel, so neither can be displaced; for the
+// rest, the oldest entry is dropped on overflow instead of the newest.
 func (c *codexAppServerClient) publishNotification(msg map[string]any) {
-	if method, _ := msg["method"].(string); method == "turn/completed" {
+	if isTurnCriticalNotification(msg) {
 		select {
 		case c.completions <- msg:
 		case <-c.done:
@@ -421,6 +438,22 @@ func (c *codexAppServerClient) publishNotification(msg map[string]any) {
 		case <-c.notifications:
 		default:
 		}
+	}
+}
+
+// isTurnCriticalNotification reports whether the event must never be dropped:
+// the completion signal itself, or an agentMessage item (the final answer).
+func isTurnCriticalNotification(msg map[string]any) bool {
+	method, _ := msg["method"].(string)
+	switch method {
+	case "turn/completed":
+		return true
+	case "item/completed":
+		params, _ := msg["params"].(map[string]any)
+		item, _ := params["item"].(map[string]any)
+		return item["type"] == "agentMessage"
+	default:
+		return false
 	}
 }
 
