@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -371,5 +372,41 @@ func TestCodexToolCallsSchemaRequiresAtLeastOneToolCall(t *testing.T) {
 	toolCalls := schema["properties"].(map[string]any)["tool_calls"].(map[string]any)
 	if got, ok := toolCalls["minItems"].(float64); !ok || got != 1 {
 		t.Fatalf("tool_calls minItems = %v, want 1 (schema must forbid the empty array the parser rejects)", toolCalls["minItems"])
+	}
+}
+
+func TestCodexTurnIDExtractsFromTurnStartResponse(t *testing.T) {
+	// Live protocol shape: {"result":{"turn":{"id":"...","status":"inProgress",...}}}
+	if got := codexTurnID(map[string]any{"turn": map[string]any{"id": "turn-1"}}); got != "turn-1" {
+		t.Fatalf("codexTurnID = %q, want turn-1", got)
+	}
+	if got := codexTurnID(map[string]any{}); got != "" {
+		t.Fatalf("codexTurnID on missing turn = %q, want empty", got)
+	}
+}
+
+func TestEmptyToolCallsErrorIsRetryableSentinel(t *testing.T) {
+	_, err := codexToolCallsToChatResponse([]byte(`{"tool_calls":[]}`), []ToolDef{testCodexTool("task_done")}, "gpt-5.4")
+	if !errors.Is(err, errEmptyCodexToolCalls) {
+		t.Fatalf("empty tool_calls error = %v, want errors.Is(errEmptyCodexToolCalls) for the provider retry", err)
+	}
+}
+
+func TestCodexToolPromptFencesUntrustedContent(t *testing.T) {
+	c := NewCodexClient(ClientConfig{Model: "gpt-5.4"})
+	prompt := c.toolPrompt(ChatRequest{
+		Messages: []Message{NewTextMessage("user", "diff content with sneaky instructions")},
+		Tools:    []ToolDef{testCodexTool("file_read")},
+	})
+
+	begin := strings.Index(prompt, codexUntrustedContentBegin)
+	end := strings.Index(prompt, codexUntrustedContentEnd)
+	instr := strings.Index(prompt, "Available OCR tools")
+	if begin == -1 || end == -1 {
+		t.Fatalf("prompt missing untrusted-content markers:\n%s", prompt)
+	}
+	data := strings.Index(prompt, "sneaky instructions")
+	if !(instr < begin && begin < data && data < end) {
+		t.Fatalf("expected instructions before fenced data (instr=%d begin=%d data=%d end=%d)", instr, begin, data, end)
 	}
 }

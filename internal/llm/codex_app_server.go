@@ -168,20 +168,23 @@ func (c *codexAppServerClient) Complete(ctx context.Context, req codexAppServerC
 	if err != nil {
 		return "", err
 	}
-	if _, err := c.request(ctx, "turn/start", turnParams); err != nil {
+	turnResp, err := c.request(ctx, "turn/start", turnParams)
+	if err != nil {
 		// The server may have accepted the turn even though the response never
 		// reached us (e.g. cancellation in flight); stop it so it cannot keep
-		// running and emitting notifications in the background.
+		// running and emitting notifications in the background. The turn id is
+		// unknown on this path, so the interrupt carries only the thread id.
 		if ctx.Err() != nil {
-			c.interruptTurn(threadID)
+			c.interruptTurn(threadID, "")
 		}
 		return "", fmt.Errorf("codex app-server turn/start: %w", err)
 	}
+	turnID := codexTurnID(turnResp)
 
 	for {
 		select {
 		case <-ctx.Done():
-			c.interruptTurn(threadID)
+			c.interruptTurn(threadID, turnID)
 			return "", ctx.Err()
 		case <-c.done:
 			return "", c.exitError()
@@ -201,12 +204,25 @@ func (c *codexAppServerClient) Complete(ctx context.Context, req codexAppServerC
 // interruptTurn asks the app-server to stop the active turn so it does not
 // keep running (and emitting notifications) after the caller gave up.
 // Best-effort: it runs detached from the caller's already-canceled context.
-func (c *codexAppServerClient) interruptTurn(threadID string) {
+// The turn id (observed in turn/start responses as result.turn.id) is included
+// when known, since interrupt handling may require both identifiers.
+func (c *codexAppServerClient) interruptTurn(threadID, turnID string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), codexAppServerInterruptTimeout)
 		defer cancel()
-		_, _ = c.request(ctx, "turn/interrupt", map[string]any{"threadId": threadID})
+		params := map[string]any{"threadId": threadID}
+		if turnID != "" {
+			params["turnId"] = turnID
+		}
+		_, _ = c.request(ctx, "turn/interrupt", params)
 	}()
+}
+
+// codexTurnID extracts result.turn.id from a turn/start response.
+func codexTurnID(resp map[string]any) string {
+	turn, _ := resp["turn"].(map[string]any)
+	id, _ := turn["id"].(string)
+	return id
 }
 
 // drainNotifications empties the notification channel without blocking.
@@ -276,6 +292,18 @@ func (c *codexAppServerClient) notify(method string, params map[string]any) erro
 	return c.write(map[string]any{"method": method, "params": params})
 }
 
+// rejectServerRequest answers an unsupported server-initiated JSON-RPC request
+// with a standard method-not-found error, preserving the original id value.
+func (c *codexAppServerClient) rejectServerRequest(id any, method string) {
+	_ = c.write(map[string]any{
+		"id": id,
+		"error": map[string]any{
+			"code":    -32601,
+			"message": fmt.Sprintf("method %q is not supported by this client", method),
+		},
+	})
+}
+
 func (c *codexAppServerClient) write(msg map[string]any) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -300,6 +328,14 @@ func (c *codexAppServerClient) readLoop(stdout io.Reader) {
 			continue
 		}
 		if id, ok := jsonRPCID(msg["id"]); ok {
+			// A message carrying both id and method is a server-initiated
+			// request (e.g. an approval prompt), not a response. We run with
+			// approvalPolicy=never and support no server->client methods, so
+			// answer immediately instead of leaving the server blocked on us.
+			if method, _ := msg["method"].(string); method != "" {
+				go c.rejectServerRequest(msg["id"], method)
+				continue
+			}
 			var resp codexAppServerResponse
 			data, _ := json.Marshal(msg)
 			_ = json.Unmarshal(data, &resp)
