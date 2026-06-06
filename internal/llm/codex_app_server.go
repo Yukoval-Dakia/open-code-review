@@ -398,15 +398,22 @@ func (c *codexAppServerClient) readLoop(stdout io.Reader) {
 		c.publishNotification(msg)
 	}
 
-	// The app-server closed stdout (process exit or pipe failure). Reap the
-	// process exactly once so it cannot linger as a zombie, then record why
-	// and signal everyone blocked on responses or notifications.
+	// Reading stopped. On a scanner error (e.g. an oversized line) the child
+	// may still be alive and blocked writing to a stdout nobody reads, so it
+	// must be killed before Wait or Wait would block forever and done would
+	// never close. Then reap the process exactly once so it cannot linger as
+	// a zombie, record why reading stopped, and signal everyone blocked on
+	// responses or notifications.
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		_ = c.cmd.Process.Kill()
+	}
 	_ = c.stdin.Close()
 	waitErr := c.cmd.Wait()
 
 	c.mu.Lock()
-	if err := scanner.Err(); err != nil {
-		c.readErr = fmt.Errorf("read codex app-server output: %w", err)
+	if scanErr != nil {
+		c.readErr = fmt.Errorf("read codex app-server output: %w", scanErr)
 	} else if waitErr != nil {
 		c.readErr = fmt.Errorf("codex app-server exited: %w", waitErr)
 	} else {
@@ -421,21 +428,23 @@ func (c *codexAppServerClient) readLoop(stdout io.Reader) {
 // the dedicated completions channel, so neither can be displaced; for the
 // rest, the oldest entry is dropped on overflow instead of the newest.
 func (c *codexAppServerClient) publishNotification(msg map[string]any) {
+	// Both enqueues are non-blocking with drop-oldest: readLoop is the sole
+	// stdout reader, and blocking it would also stall response delivery
+	// (including turn/interrupt acks) and wedge the client. Dropping the
+	// oldest critical event is safe — only the latest final answer and
+	// completion signal matter to the accumulator.
+	target := c.notifications
 	if isTurnCriticalNotification(msg) {
-		select {
-		case c.completions <- msg:
-		case <-c.done:
-		}
-		return
+		target = c.completions
 	}
 	for {
 		select {
-		case c.notifications <- msg:
+		case target <- msg:
 			return
 		default:
 		}
 		select {
-		case <-c.notifications:
+		case <-target:
 		default:
 		}
 	}
