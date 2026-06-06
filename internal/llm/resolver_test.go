@@ -373,3 +373,13 @@ func TestCodexRuntimeExtraBodyValidatesExtraBodyKey(t *testing.T) {
 		t.Fatalf("codex_runtime = %v, want exec (dedicated setting wins)", got)
 	}
 }
+
+func TestCodexRuntimeExtraBodyWhitespaceRuntimeFallsBackToExtraBody(t *testing.T) {
+	extra, err := codexRuntimeExtraBody("   ", map[string]any{"codex_runtime": "app_server"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := extra["codex_runtime"]; got != "app_server" {
+		t.Fatalf("codex_runtime = %v, want app_server (whitespace-only dedicated value must be treated as unset)", got)
+	}
+}

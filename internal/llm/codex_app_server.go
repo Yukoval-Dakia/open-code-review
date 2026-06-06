@@ -35,11 +35,14 @@ type codexAppServerCompletion struct {
 }
 
 type codexAppServerClient struct {
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stderr   *lockedBuffer
-	writeMu  sync.Mutex
-	activeMu sync.Mutex
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	stderr  *lockedBuffer
+	writeMu sync.Mutex
+
+	// activeSlot serializes turns (capacity 1). A channel instead of a mutex
+	// so that waiters can also observe context cancellation and process exit.
+	activeSlot chan struct{}
 
 	mu            sync.Mutex
 	nextID        int64
@@ -97,6 +100,7 @@ func startCodexAppServer(ctx context.Context) (*codexAppServerClient, error) {
 		cmd:           cmd,
 		stdin:         stdin,
 		stderr:        stderr,
+		activeSlot:    make(chan struct{}, 1),
 		pending:       make(map[int64]chan codexAppServerResponse),
 		notifications: make(chan map[string]any, 128),
 		done:          make(chan struct{}),
@@ -108,7 +112,10 @@ func startCodexAppServer(ctx context.Context) (*codexAppServerClient, error) {
 	initCtx, cancel := context.WithTimeout(ctx, codexAppServerInitTimeout)
 	defer cancel()
 	if err := c.initialize(initCtx); err != nil {
+		// Killing the process closes stdout; readLoop then exits and reaps it
+		// via cmd.Wait, so no zombie is left behind on this path either.
 		_ = cmd.Process.Kill()
+		<-c.done
 		return nil, err
 	}
 	return c, nil
@@ -132,8 +139,16 @@ func (c *codexAppServerClient) initialize(ctx context.Context) error {
 }
 
 func (c *codexAppServerClient) Complete(ctx context.Context, req codexAppServerCompletion) (string, error) {
-	c.activeMu.Lock()
-	defer c.activeMu.Unlock()
+	// Acquire the single turn slot without outliving the caller's deadline:
+	// a waiter whose context fires must not keep blocking behind a slow turn.
+	select {
+	case c.activeSlot <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-c.done:
+		return "", c.exitError()
+	}
+	defer func() { <-c.activeSlot }()
 
 	// Discard notifications left over from earlier canceled/timed-out turns so
 	// they cannot contaminate this completion.
@@ -149,8 +164,17 @@ func (c *codexAppServerClient) Complete(ctx context.Context, req codexAppServerC
 	}
 
 	acc := newCodexAppServerTurnAccumulator(threadID)
-	turnParams := codexAppServerTurnStartParams(threadID, req.Model, req.RepoDir, req.Prompt, req.OutputSchema)
+	turnParams, err := codexAppServerTurnStartParams(threadID, req.Model, req.RepoDir, req.Prompt, req.OutputSchema)
+	if err != nil {
+		return "", err
+	}
 	if _, err := c.request(ctx, "turn/start", turnParams); err != nil {
+		// The server may have accepted the turn even though the response never
+		// reached us (e.g. cancellation in flight); stop it so it cannot keep
+		// running and emitting notifications in the background.
+		if ctx.Err() != nil {
+			c.interruptTurn(threadID)
+		}
 		return "", fmt.Errorf("codex app-server turn/start: %w", err)
 	}
 
@@ -290,11 +314,17 @@ func (c *codexAppServerClient) readLoop(stdout io.Reader) {
 		c.publishNotification(msg)
 	}
 
-	// The app-server closed stdout (process exit or pipe failure). Record why
+	// The app-server closed stdout (process exit or pipe failure). Reap the
+	// process exactly once so it cannot linger as a zombie, then record why
 	// and signal everyone blocked on responses or notifications.
+	_ = c.stdin.Close()
+	waitErr := c.cmd.Wait()
+
 	c.mu.Lock()
 	if err := scanner.Err(); err != nil {
 		c.readErr = fmt.Errorf("read codex app-server output: %w", err)
+	} else if waitErr != nil {
+		c.readErr = fmt.Errorf("codex app-server exited: %w", waitErr)
 	} else {
 		c.readErr = fmt.Errorf("codex app-server closed its output stream")
 	}
@@ -347,7 +377,7 @@ func codexAppServerThreadStartParams(model, repoDir string) map[string]any {
 	return params
 }
 
-func codexAppServerTurnStartParams(threadID, model, repoDir, prompt string, outputSchema []byte) map[string]any {
+func codexAppServerTurnStartParams(threadID, model, repoDir, prompt string, outputSchema []byte) (map[string]any, error) {
 	params := map[string]any{
 		"threadId":       threadID,
 		"input":          []map[string]string{{"type": "text", "text": prompt}},
@@ -367,11 +397,14 @@ func codexAppServerTurnStartParams(threadID, model, repoDir, prompt string, outp
 	}
 	if len(outputSchema) > 0 {
 		var schema map[string]any
-		if err := json.Unmarshal(outputSchema, &schema); err == nil {
-			params["outputSchema"] = schema
+		if err := json.Unmarshal(outputSchema, &schema); err != nil {
+			// Dropping the schema silently would yield unconstrained text that
+			// only fails later during parsing, far from the actual cause.
+			return nil, fmt.Errorf("codex app-server output schema is not valid JSON: %w", err)
 		}
+		params["outputSchema"] = schema
 	}
-	return params
+	return params, nil
 }
 
 func codexThreadID(resp map[string]any) (string, error) {
@@ -416,11 +449,16 @@ func newCodexAppServerTurnAccumulator(threadID string) *codexAppServerTurnAccumu
 func (a *codexAppServerTurnAccumulator) HandleNotification(msg map[string]any) {
 	method, _ := msg["method"].(string)
 	params, _ := msg["params"].(map[string]any)
-	if !a.matchesThread(params) {
-		return
-	}
+	id := codexNotificationThreadID(params)
 	switch method {
 	case "item/completed":
+		// Text from a conflicting thread is stale. Text without a thread id is
+		// still recorded: it cannot complete the turn by itself, so the worst
+		// case is harmless, whereas dropping it could lose the final answer on
+		// protocol variants that omit the id on items.
+		if a.threadID != "" && id != "" && id != a.threadID {
+			return
+		}
 		item, _ := params["item"].(map[string]any)
 		if item["type"] != "agentMessage" {
 			return
@@ -434,25 +472,24 @@ func (a *codexAppServerTurnAccumulator) HandleNotification(msg map[string]any) {
 			a.finalText = text
 		}
 	case "turn/completed":
+		// The completion signal requires positive correlation: an anonymous or
+		// stale turn/completed (e.g. from an interrupted previous turn) must
+		// never finish this turn with possibly stale text.
+		if a.threadID != "" && id != a.threadID {
+			return
+		}
 		a.done = true
 	}
 }
 
-// matchesThread reports whether a notification belongs to this turn's thread.
-// Stale events from earlier canceled turns carry a different thread id and are
-// ignored. Notifications without a recognizable thread id are accepted to stay
-// compatible with protocol variants that omit it.
-func (a *codexAppServerTurnAccumulator) matchesThread(params map[string]any) bool {
-	if a.threadID == "" || params == nil {
-		return true
-	}
-	id := codexNotificationThreadID(params)
-	return id == "" || id == a.threadID
-}
-
 func codexNotificationThreadID(params map[string]any) string {
-	if id, _ := params["threadId"].(string); id != "" {
-		return id
+	if params == nil {
+		return ""
+	}
+	for _, key := range []string{"threadId", "thread_id"} {
+		if id, _ := params[key].(string); id != "" {
+			return id
+		}
 	}
 	if thread, _ := params["thread"].(map[string]any); thread != nil {
 		if id, _ := thread["id"].(string); id != "" {
@@ -460,8 +497,10 @@ func codexNotificationThreadID(params map[string]any) string {
 		}
 	}
 	if item, _ := params["item"].(map[string]any); item != nil {
-		if id, _ := item["threadId"].(string); id != "" {
-			return id
+		for _, key := range []string{"threadId", "thread_id"} {
+			if id, _ := item[key].(string); id != "" {
+				return id
+			}
 		}
 	}
 	return ""

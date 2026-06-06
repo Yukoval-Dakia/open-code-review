@@ -29,6 +29,7 @@ func TestBuildCodexExecArgsUsesOfficialCodexCLI(t *testing.T) {
 		"exec",
 		"--cd", "/tmp/repo",
 		"--sandbox", "read-only",
+		"-c", "approval_policy=never",
 		"--output-last-message", "/tmp/out.txt",
 		"--output-schema", "/tmp/schema.json",
 		"--model", "gpt-5.4",
@@ -90,7 +91,10 @@ func TestBuildCodexAppServerThreadStartParams(t *testing.T) {
 }
 
 func TestBuildCodexAppServerTurnStartParams(t *testing.T) {
-	params := codexAppServerTurnStartParams("thread_1", "gpt-5.4", "/tmp/repo", "hello", []byte(codexProviderToolCallsSchema))
+	params, err := codexAppServerTurnStartParams("thread_1", "gpt-5.4", "/tmp/repo", "hello", []byte(codexProviderToolCallsSchema))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if params["threadId"] != "thread_1" {
 		t.Fatalf("threadId = %v, want thread_1", params["threadId"])
@@ -161,13 +165,28 @@ func TestCodexAppServerAccumulatorIgnoresOtherThreads(t *testing.T) {
 		t.Fatalf("FinalText() = %q, want empty (stale thread ignored)", got)
 	}
 
-	// Events without a recognizable thread id are still accepted.
+	// The completion signal requires positive correlation: an anonymous
+	// turn/completed must not finish this turn either.
 	acc.HandleNotification(map[string]any{
 		"method": "turn/completed",
 		"params": map[string]any{},
 	})
+	if acc.Completed() {
+		t.Fatalf("accumulator completed from an anonymous turn/completed")
+	}
+
+	acc.HandleNotification(map[string]any{
+		"method": "turn/completed",
+		"params": map[string]any{"threadId": "thread-2"},
+	})
 	if !acc.Completed() {
-		t.Fatalf("accumulator ignored turn/completed without thread id")
+		t.Fatalf("accumulator ignored its own thread's turn/completed")
+	}
+}
+
+func TestCodexAppServerTurnStartParamsRejectsMalformedSchema(t *testing.T) {
+	if _, err := codexAppServerTurnStartParams("thread_1", "gpt-5.4", "", "hello", []byte(`{not json`)); err == nil {
+		t.Fatalf("expected error for malformed output schema, got nil")
 	}
 }
 

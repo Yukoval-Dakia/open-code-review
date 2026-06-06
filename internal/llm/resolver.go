@@ -205,6 +205,7 @@ func codexRuntimeExtraBody(runtime string, base map[string]any) (map[string]any,
 	// A codex_runtime carried inside extra_body reaches CodexClient.runtime()
 	// through the same key, so it must pass the same validation as the
 	// dedicated setting. The dedicated setting wins when both are present.
+	runtime = strings.TrimSpace(runtime)
 	if runtime == "" {
 		if fromExtra, ok := extra["codex_runtime"]; ok {
 			s, isString := fromExtra.(string)

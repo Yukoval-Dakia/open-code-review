@@ -228,6 +228,10 @@ func (c *CodexClient) buildExecArgsForModel(model, schemaPath, outputPath string
 		args = append(args, "--cd", repoDir)
 	}
 	args = append(args, "--sandbox", "read-only")
+	// codex exec still reads the user's config file; an interactive policy
+	// like "on-request" would prompt (or fail) inside this non-interactive
+	// loop, so pin the approval policy the same way the app-server path does.
+	args = append(args, "-c", "approval_policy=never")
 	args = append(args, "--output-last-message", outputPath)
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
