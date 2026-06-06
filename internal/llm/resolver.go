@@ -52,7 +52,9 @@ func ResolveEndpoint(configPath string) (ResolvedEndpoint, error) {
 
 	// An explicit OCR_LLM_PROTOCOL is a deliberate per-invocation override
 	// (e.g. CI pipelines); it must not be shadowed by a persistent config
-	// file, so the environment strategy is promoted ahead of it.
+	// file, so the environment strategy is promoted ahead of it. For codex
+	// the env endpoint is complete by itself; for openai/anthropic the env
+	// strategy itself enforces that URL/token/model are also provided.
 	if strings.TrimSpace(os.Getenv(envOCRLLMProtocol)) != "" {
 		strategies[0], strategies[1] = strategies[1], strategies[0]
 	}
@@ -96,6 +98,13 @@ func tryOCREnv() (ResolvedEndpoint, bool, error) {
 		return ResolvedEndpoint{Model: model, Protocol: "codex", Source: "OCR environment", ExtraBody: extra}, true, nil
 	}
 	if url == "" || token == "" || model == "" {
+		// An explicit non-codex protocol is an override request that cannot be
+		// satisfied without a full endpoint; silently falling through to the
+		// config file would resolve a different protocol than the user asked
+		// for, so fail fast instead.
+		if protocol != "" {
+			return ResolvedEndpoint{}, false, fmt.Errorf("%s=%s also requires %s, %s, and %s to be set", envOCRLLMProtocol, protocol, envOCRLLMURL, envOCRLLMToken, envOCRLLMModel)
+		}
 		return ResolvedEndpoint{}, false, nil
 	}
 
@@ -193,15 +202,28 @@ func codexRuntimeExtraBody(runtime string, base map[string]any) (map[string]any,
 	for k, v := range base {
 		extra[k] = v
 	}
+	// A codex_runtime carried inside extra_body reaches CodexClient.runtime()
+	// through the same key, so it must pass the same validation as the
+	// dedicated setting. The dedicated setting wins when both are present.
+	if runtime == "" {
+		if fromExtra, ok := extra["codex_runtime"]; ok {
+			s, isString := fromExtra.(string)
+			if !isString {
+				return nil, fmt.Errorf("invalid codex runtime %#v in extra_body: must be a string", fromExtra)
+			}
+			runtime = s
+		}
+	}
 	switch normalized := strings.ToLower(strings.TrimSpace(runtime)); normalized {
 	case "":
+		delete(extra, "codex_runtime")
 	case codexRuntimeExec:
 		extra["codex_runtime"] = codexRuntimeExec
 	case "app_server", "app-server", "appserver":
 		extra["codex_runtime"] = codexRuntimeAppServer
 	default:
 		// A typo like "app_servr" would otherwise be stored verbatim and the
-		// client would silently fall back to the exec runtime.
+		// client would silently select the exec runtime.
 		return nil, fmt.Errorf("invalid codex runtime %q: must be 'exec' or 'app_server'", runtime)
 	}
 	return extra, nil

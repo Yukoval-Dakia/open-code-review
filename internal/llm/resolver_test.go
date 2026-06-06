@@ -334,3 +334,42 @@ func TestCodexRuntimeExtraBodyNormalizesAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveEndpoint_EnvNonCodexProtocolRequiresFullEndpoint(t *testing.T) {
+	t.Setenv("OCR_LLM_PROTOCOL", "openai")
+	t.Setenv("OCR_LLM_URL", "")
+	t.Setenv("OCR_LLM_TOKEN", "")
+	t.Setenv("OCR_LLM_MODEL", "")
+
+	// A protocol-only override cannot be satisfied; silently resolving the
+	// config file's (different) protocol instead would betray the request.
+	if _, err := ResolveEndpoint(filepath.Join(t.TempDir(), "nonexistent.json")); err == nil {
+		t.Fatalf("expected error for OCR_LLM_PROTOCOL=openai without URL/token/model, got nil")
+	}
+}
+
+func TestCodexRuntimeExtraBodyValidatesExtraBodyKey(t *testing.T) {
+	if _, err := codexRuntimeExtraBody("", map[string]any{"codex_runtime": "app_servr"}); err == nil {
+		t.Fatalf("expected error for typo codex_runtime inside extra_body, got nil")
+	}
+	if _, err := codexRuntimeExtraBody("", map[string]any{"codex_runtime": 42}); err == nil {
+		t.Fatalf("expected error for non-string codex_runtime inside extra_body, got nil")
+	}
+
+	extra, err := codexRuntimeExtraBody("", map[string]any{"codex_runtime": "App-Server"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := extra["codex_runtime"]; got != "app_server" {
+		t.Fatalf("extra_body codex_runtime = %v, want normalized app_server", got)
+	}
+
+	// The dedicated setting wins over extra_body when both are present.
+	extra, err = codexRuntimeExtraBody("exec", map[string]any{"codex_runtime": "app_server"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := extra["codex_runtime"]; got != "exec" {
+		t.Fatalf("codex_runtime = %v, want exec (dedicated setting wins)", got)
+	}
+}

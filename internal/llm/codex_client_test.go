@@ -343,3 +343,14 @@ func TestCodexStreamCompletionRejectsToolRequests(t *testing.T) {
 		t.Fatalf("StreamCompletion accepted a tool request; tool calls would be silently dropped")
 	}
 }
+
+func TestCodexToolCallsSchemaRequiresAtLeastOneToolCall(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(codexProviderToolCallsSchema), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+	toolCalls := schema["properties"].(map[string]any)["tool_calls"].(map[string]any)
+	if got, ok := toolCalls["minItems"].(float64); !ok || got != 1 {
+		t.Fatalf("tool_calls minItems = %v, want 1 (schema must forbid the empty array the parser rejects)", toolCalls["minItems"])
+	}
+}
