@@ -383,3 +383,25 @@ func TestCodexRuntimeExtraBodyWhitespaceRuntimeFallsBackToExtraBody(t *testing.T
 		t.Fatalf("codex_runtime = %v, want app_server (whitespace-only dedicated value must be treated as unset)", got)
 	}
 }
+
+func TestResolveEndpoint_ConfigFileNonCodexProtocolRequiresFullEndpoint(t *testing.T) {
+	t.Setenv("OCR_LLM_PROTOCOL", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://cc.example.com")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "cc-token")
+	t.Setenv("ANTHROPIC_MODEL", "claude-opus-4-7")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := map[string]any{"llm": map[string]any{
+		"protocol": "openai", // explicit, but url/auth_token/model missing
+	}}
+	data, _ := json.Marshal(cfg)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Must fail fast, not silently fall through to the Claude env provider.
+	if _, err := ResolveEndpoint(path); err == nil {
+		t.Fatalf("expected error for explicit llm.protocol without full endpoint, got nil")
+	}
+}

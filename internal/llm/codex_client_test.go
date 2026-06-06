@@ -394,19 +394,34 @@ func TestEmptyToolCallsErrorIsRetryableSentinel(t *testing.T) {
 
 func TestCodexToolPromptFencesUntrustedContent(t *testing.T) {
 	c := NewCodexClient(ClientConfig{Model: "gpt-5.4"})
-	prompt := c.toolPrompt(ChatRequest{
+	req := ChatRequest{
 		Messages: []Message{NewTextMessage("user", "diff content with sneaky instructions")},
 		Tools:    []ToolDef{testCodexTool("file_read")},
-	})
+	}
+	prompt := c.toolPrompt(req)
 
-	begin := strings.Index(prompt, codexUntrustedContentBegin)
-	end := strings.Index(prompt, codexUntrustedContentEnd)
+	begin := strings.Index(prompt, "<<<UNTRUSTED_REVIEW_DATA_")
+	end := strings.LastIndex(prompt, "_END>>>")
 	instr := strings.Index(prompt, "Available OCR tools")
-	if begin == -1 || end == -1 {
-		t.Fatalf("prompt missing untrusted-content markers:\n%s", prompt)
+	if begin == -1 || end == -1 || begin == strings.LastIndex(prompt, "<<<UNTRUSTED_REVIEW_DATA_") {
+		t.Fatalf("prompt missing paired untrusted-content markers:\n%s", prompt)
 	}
 	data := strings.Index(prompt, "sneaky instructions")
 	if !(instr < begin && begin < data && data < end) {
 		t.Fatalf("expected instructions before fenced data (instr=%d begin=%d data=%d end=%d)", instr, begin, data, end)
+	}
+}
+
+func TestCodexUntrustedFenceMarkersAreUnforgeable(t *testing.T) {
+	begin1, end1 := codexUntrustedFenceMarkers()
+	begin2, end2 := codexUntrustedFenceMarkers()
+	if begin1 == begin2 || end1 == end2 {
+		t.Fatalf("fence markers must differ between requests: %q vs %q", begin1, begin2)
+	}
+	if !strings.Contains(begin1, "UNTRUSTED_REVIEW_DATA_") || !strings.HasSuffix(begin1, "_BEGIN>>>") {
+		t.Fatalf("unexpected begin marker shape: %q", begin1)
+	}
+	if !strings.HasSuffix(end1, "_END>>>") {
+		t.Fatalf("unexpected end marker shape: %q", end1)
 	}
 }

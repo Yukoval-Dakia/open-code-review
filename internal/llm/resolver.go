@@ -179,6 +179,13 @@ func tryOCRConfig(path string) (ResolvedEndpoint, bool, error) {
 	}
 
 	if cfg.Llm.URL == "" || cfg.Llm.AuthToken == "" || cfg.Llm.Model == "" {
+		// Same fail-fast contract as OCR_LLM_PROTOCOL: an explicit non-codex
+		// protocol cannot be satisfied without a full endpoint, and silently
+		// falling through to Claude env / shell rc would route reviews to a
+		// different provider than the config file requested.
+		if protocol != "" {
+			return ResolvedEndpoint{}, false, fmt.Errorf("llm.protocol=%s also requires llm.url, llm.auth_token, and llm.model to be set", protocol)
+		}
 		return ResolvedEndpoint{}, false, nil
 	}
 

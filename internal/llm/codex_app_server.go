@@ -48,6 +48,10 @@ type codexAppServerClient struct {
 	nextID        int64
 	pending       map[int64]chan codexAppServerResponse
 	notifications chan map[string]any
+	// completions carries turn/completed events on a dedicated channel so the
+	// completion signal can never be displaced by overflow in the general
+	// notification buffer. Turns are serialized, so a small capacity suffices.
+	completions chan map[string]any
 
 	done    chan struct{} // closed when readLoop exits (process died or closed stdout)
 	readErr error         // why readLoop exited; set before done is closed
@@ -103,6 +107,7 @@ func startCodexAppServer(ctx context.Context) (*codexAppServerClient, error) {
 		activeSlot:    make(chan struct{}, 1),
 		pending:       make(map[int64]chan codexAppServerResponse),
 		notifications: make(chan map[string]any, 128),
+		completions:   make(chan map[string]any, 8),
 		done:          make(chan struct{}),
 	}
 	go c.readLoop(stdout)
@@ -182,21 +187,40 @@ func (c *codexAppServerClient) Complete(ctx context.Context, req codexAppServerC
 	turnID := codexTurnID(turnResp)
 
 	for {
+		var msg map[string]any
 		select {
 		case <-ctx.Done():
 			c.interruptTurn(threadID, turnID)
 			return "", ctx.Err()
 		case <-c.done:
 			return "", c.exitError()
+		case msg = <-c.notifications:
+		case msg = <-c.completions:
+		}
+		acc.HandleNotification(msg)
+		if acc.Completed() {
+			// Item events are delivered before turn/completed, but the two
+			// channels are independent; drain remaining items so a final
+			// answer still in the general buffer is not missed.
+			c.consumePendingItems(acc)
+			text := strings.TrimSpace(acc.FinalText())
+			if text == "" {
+				return "", fmt.Errorf("codex app-server turn completed without final assistant message")
+			}
+			return text, nil
+		}
+	}
+}
+
+// consumePendingItems applies notifications already buffered at completion
+// time, without blocking for new ones.
+func (c *codexAppServerClient) consumePendingItems(acc *codexAppServerTurnAccumulator) {
+	for {
+		select {
 		case msg := <-c.notifications:
 			acc.HandleNotification(msg)
-			if acc.Completed() {
-				text := strings.TrimSpace(acc.FinalText())
-				if text == "" {
-					return "", fmt.Errorf("codex app-server turn completed without final assistant message")
-				}
-				return text, nil
-			}
+		default:
+			return
 		}
 	}
 }
@@ -225,11 +249,12 @@ func codexTurnID(resp map[string]any) string {
 	return id
 }
 
-// drainNotifications empties the notification channel without blocking.
+// drainNotifications empties both notification channels without blocking.
 func (c *codexAppServerClient) drainNotifications() {
 	for {
 		select {
 		case <-c.notifications:
+		case <-c.completions:
 		default:
 			return
 		}
@@ -368,10 +393,18 @@ func (c *codexAppServerClient) readLoop(stdout io.Reader) {
 	close(c.done)
 }
 
-// publishNotification enqueues a protocol notification. If the buffer is
-// full, the oldest entry is dropped instead of the newest: final-answer and
-// turn/completed events arrive last and must never be silently discarded.
+// publishNotification enqueues a protocol notification. turn/completed goes
+// to the dedicated completions channel, so the completion signal can never be
+// displaced; for the rest, the oldest entry is dropped on overflow instead of
+// the newest, because late events (such as the final answer) matter most.
 func (c *codexAppServerClient) publishNotification(msg map[string]any) {
+	if method, _ := msg["method"].(string); method == "turn/completed" {
+		select {
+		case c.completions <- msg:
+		case <-c.done:
+		}
+		return
+	}
 	for {
 		select {
 		case c.notifications <- msg:
