@@ -352,24 +352,30 @@ func (c *codexAppServerClient) readLoop(stdout io.Reader) {
 		if err := dec.Decode(&msg); err != nil {
 			continue
 		}
-		if id, ok := jsonRPCID(msg["id"]); ok {
+		if rawID, hasID := msg["id"]; hasID && rawID != nil {
 			// A message carrying both id and method is a server-initiated
 			// request (e.g. an approval prompt), not a response. We run with
 			// approvalPolicy=never and support no server->client methods, so
 			// answer immediately instead of leaving the server blocked on us.
+			// Routing keys off the raw id: JSON-RPC permits string ids, which
+			// must still receive a rejection even though our own outgoing
+			// request ids are always numeric.
 			if method, _ := msg["method"].(string); method != "" {
-				go c.rejectServerRequest(msg["id"], method)
+				go c.rejectServerRequest(rawID, method)
 				continue
 			}
-			var resp codexAppServerResponse
-			data, _ := json.Marshal(msg)
-			_ = json.Unmarshal(data, &resp)
-			c.mu.Lock()
-			ch := c.pending[id]
-			c.mu.Unlock()
-			if ch != nil {
-				ch <- resp
+			if id, ok := jsonRPCID(rawID); ok {
+				var resp codexAppServerResponse
+				data, _ := json.Marshal(msg)
+				_ = json.Unmarshal(data, &resp)
+				c.mu.Lock()
+				ch := c.pending[id]
+				c.mu.Unlock()
+				if ch != nil {
+					ch <- resp
+				}
 			}
+			// A response with an id we never issued is not ours to handle.
 			continue
 		}
 		c.publishNotification(msg)
@@ -521,11 +527,12 @@ func (a *codexAppServerTurnAccumulator) HandleNotification(msg map[string]any) {
 	id := codexNotificationThreadID(params)
 	switch method {
 	case "item/completed":
-		// Text from a conflicting thread is stale. Text without a thread id is
-		// still recorded: it cannot complete the turn by itself, so the worst
-		// case is harmless, whereas dropping it could lose the final answer on
-		// protocol variants that omit the id on items.
-		if a.threadID != "" && id != "" && id != a.threadID {
+		// Items require positive thread correlation, like turn/completed:
+		// live protocol traces (codex-cli 0.134.0) show item events always
+		// carry threadId at the top level, and accepting anonymous text would
+		// let stragglers from a canceled turn (arriving after the pre-turn
+		// drain) be returned as this turn's answer.
+		if a.threadID != "" && id != a.threadID {
 			return
 		}
 		item, _ := params["item"].(map[string]any)

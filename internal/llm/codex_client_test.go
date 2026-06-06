@@ -425,3 +425,38 @@ func TestCodexUntrustedFenceMarkersAreUnforgeable(t *testing.T) {
 		t.Fatalf("unexpected end marker shape: %q", end1)
 	}
 }
+
+func TestCodexAppServerAccumulatorRejectsAnonymousItems(t *testing.T) {
+	acc := newCodexAppServerTurnAccumulator("thread-1")
+
+	// Stragglers from a canceled turn may omit metadata; once a thread id is
+	// known, anonymous text must not be recorded as this turn's answer.
+	acc.HandleNotification(map[string]any{
+		"method": "item/completed",
+		"params": map[string]any{
+			"item": map[string]any{
+				"type":  "agentMessage",
+				"text":  "stale anonymous answer",
+				"phase": "final_answer",
+			},
+		},
+	})
+	if got := acc.FinalText(); got != "" {
+		t.Fatalf("FinalText() = %q, want empty (anonymous item must be rejected)", got)
+	}
+
+	acc.HandleNotification(map[string]any{
+		"method": "item/completed",
+		"params": map[string]any{
+			"threadId": "thread-1",
+			"item": map[string]any{
+				"type":  "agentMessage",
+				"text":  "real answer",
+				"phase": "final_answer",
+			},
+		},
+	})
+	if got := acc.FinalText(); got != "real answer" {
+		t.Fatalf("FinalText() = %q, want real answer", got)
+	}
+}
