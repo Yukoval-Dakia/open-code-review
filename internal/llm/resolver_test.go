@@ -285,3 +285,52 @@ func TestResolveEndpoint_ConfigFileInvalidProtocolFails(t *testing.T) {
 		t.Fatalf("expected error for invalid llm.protocol in config file, got nil")
 	}
 }
+
+func TestResolveEndpoint_EnvProtocolOverridesConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := map[string]any{"llm": map[string]any{
+		"url":        "https://api.example.com/v1/chat/completions",
+		"auth_token": "test-token",
+		"model":      "gpt-5.4",
+	}}
+	data, _ := json.Marshal(cfg)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OCR_LLM_PROTOCOL", "codex")
+	t.Setenv("OCR_LLM_MODEL", "")
+	t.Setenv("OCR_CODEX_RUNTIME", "")
+
+	ep, err := ResolveEndpoint(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Protocol != "codex" {
+		t.Errorf("protocol = %q, want codex (explicit env override must beat config file)", ep.Protocol)
+	}
+	if ep.Source != "OCR environment" {
+		t.Errorf("source = %q, want OCR environment", ep.Source)
+	}
+}
+
+func TestResolveEndpoint_InvalidCodexRuntimeFails(t *testing.T) {
+	t.Setenv("OCR_LLM_PROTOCOL", "codex")
+	t.Setenv("OCR_CODEX_RUNTIME", "app_servr") // typo must error, not silently fall back
+
+	if _, err := ResolveEndpoint(filepath.Join(t.TempDir(), "nonexistent.json")); err == nil {
+		t.Fatalf("expected error for invalid OCR_CODEX_RUNTIME, got nil")
+	}
+}
+
+func TestCodexRuntimeExtraBodyNormalizesAliases(t *testing.T) {
+	for _, alias := range []string{"app_server", "app-server", "appserver", " App_Server "} {
+		extra, err := codexRuntimeExtraBody(alias, nil)
+		if err != nil {
+			t.Fatalf("codexRuntimeExtraBody(%q) returned error: %v", alias, err)
+		}
+		if got := extra["codex_runtime"]; got != "app_server" {
+			t.Fatalf("codexRuntimeExtraBody(%q) = %v, want app_server", alias, got)
+		}
+	}
+}

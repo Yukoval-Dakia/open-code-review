@@ -50,6 +50,13 @@ func ResolveEndpoint(configPath string) (ResolvedEndpoint, error) {
 		{"Shell rc file", tryShellRC},
 	}
 
+	// An explicit OCR_LLM_PROTOCOL is a deliberate per-invocation override
+	// (e.g. CI pipelines); it must not be shadowed by a persistent config
+	// file, so the environment strategy is promoted ahead of it.
+	if strings.TrimSpace(os.Getenv(envOCRLLMProtocol)) != "" {
+		strategies[0], strategies[1] = strategies[1], strategies[0]
+	}
+
 	for _, s := range strategies {
 		ep, ok, err := s.fn()
 		if err != nil {
@@ -82,7 +89,11 @@ func tryOCREnv() (ResolvedEndpoint, bool, error) {
 		return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRLLMProtocol, err)
 	}
 	if protocol == "codex" {
-		return ResolvedEndpoint{Model: model, Protocol: "codex", Source: "OCR environment", ExtraBody: codexRuntimeExtraBody(os.Getenv(envOCRCodexRuntime), nil)}, true, nil
+		extra, err := codexRuntimeExtraBody(os.Getenv(envOCRCodexRuntime), nil)
+		if err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRCodexRuntime, err)
+		}
+		return ResolvedEndpoint{Model: model, Protocol: "codex", Source: "OCR environment", ExtraBody: extra}, true, nil
 	}
 	if url == "" || token == "" || model == "" {
 		return ResolvedEndpoint{}, false, nil
@@ -151,7 +162,11 @@ func tryOCRConfig(path string) (ResolvedEndpoint, bool, error) {
 		return ResolvedEndpoint{}, false, fmt.Errorf("llm.protocol: %w", err)
 	}
 	if protocol == "codex" {
-		return ResolvedEndpoint{Model: cfg.Llm.Model, Protocol: "codex", Source: "OCR config file", ExtraBody: codexRuntimeExtraBody(cfg.Llm.CodexRuntime, cfg.Llm.ExtraBody)}, true, nil
+		extra, err := codexRuntimeExtraBody(cfg.Llm.CodexRuntime, cfg.Llm.ExtraBody)
+		if err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("llm.codex_runtime: %w", err)
+		}
+		return ResolvedEndpoint{Model: cfg.Llm.Model, Protocol: "codex", Source: "OCR config file", ExtraBody: extra}, true, nil
 	}
 
 	if cfg.Llm.URL == "" || cfg.Llm.AuthToken == "" || cfg.Llm.Model == "" {
@@ -173,16 +188,23 @@ func tryOCRConfig(path string) (ResolvedEndpoint, bool, error) {
 	return ResolvedEndpoint{URL: cfg.Llm.URL, Token: cfg.Llm.AuthToken, Model: cfg.Llm.Model, Protocol: protocol, Source: "OCR config file", ExtraBody: cfg.Llm.ExtraBody}, true, nil
 }
 
-func codexRuntimeExtraBody(runtime string, base map[string]any) map[string]any {
+func codexRuntimeExtraBody(runtime string, base map[string]any) (map[string]any, error) {
 	extra := make(map[string]any, len(base)+1)
 	for k, v := range base {
 		extra[k] = v
 	}
-	runtime = strings.ToLower(strings.TrimSpace(runtime))
-	if runtime != "" {
-		extra["codex_runtime"] = runtime
+	switch normalized := strings.ToLower(strings.TrimSpace(runtime)); normalized {
+	case "":
+	case codexRuntimeExec:
+		extra["codex_runtime"] = codexRuntimeExec
+	case "app_server", "app-server", "appserver":
+		extra["codex_runtime"] = codexRuntimeAppServer
+	default:
+		// A typo like "app_servr" would otherwise be stored verbatim and the
+		// client would silently fall back to the exec runtime.
+		return nil, fmt.Errorf("invalid codex runtime %q: must be 'exec' or 'app_server'", runtime)
 	}
-	return extra
+	return extra, nil
 }
 
 // tryCCEnv reads Claude Code environment variables.

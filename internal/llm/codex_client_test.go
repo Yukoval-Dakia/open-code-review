@@ -332,3 +332,14 @@ func testCodexTool(name string) ToolDef {
 		},
 	}
 }
+
+func TestCodexStreamCompletionRejectsToolRequests(t *testing.T) {
+	c := NewCodexClient(ClientConfig{Model: "gpt-5.4"})
+	err := c.StreamCompletion(ChatRequest{
+		Messages: []Message{NewTextMessage("user", "review")},
+		Tools:    []ToolDef{testCodexTool("file_read")},
+	}, func([]byte) error { return nil })
+	if err == nil {
+		t.Fatalf("StreamCompletion accepted a tool request; tool calls would be silently dropped")
+	}
+}

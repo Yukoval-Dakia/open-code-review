@@ -51,6 +51,11 @@ func (c *CodexClient) CompletionsWithCtx(ctx context.Context, req ChatRequest) (
 }
 
 func (c *CodexClient) StreamCompletion(req ChatRequest, cb func(chunk []byte) error) error {
+	// Tool completions return their payload in ToolCalls with empty content;
+	// forwarding only content would silently drop the requested action.
+	if len(req.Tools) > 0 {
+		return fmt.Errorf("codex provider does not support streaming tool completions; use Completions instead")
+	}
 	resp, err := c.Completions(req)
 	if err != nil {
 		return err
