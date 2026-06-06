@@ -87,6 +87,12 @@ func runReview(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve LLM endpoint: %w", err)
 	}
+	if ep.Protocol == "codex" {
+		if ep.ExtraBody == nil {
+			ep.ExtraBody = make(map[string]any)
+		}
+		ep.ExtraBody["repo_dir"] = repoDir
+	}
 
 	llmClient := llm.NewLLMClient(ep)
 	model := ep.Model

@@ -130,6 +130,33 @@ export OCR_USE_ANTHROPIC=true
 
 同时兼容了 Claude Code 环境变量（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_MODEL`），并解析 `~/.zshrc` / `~/.bashrc` 中的相关导出。
 
+**使用 Codex 订阅**
+
+如果你已经通过官方 Codex CLI 登录了 ChatGPT/Codex，可以让 OCR 使用 Codex 作为与 OpenAI/Anthropic 平级的 LLM provider：
+
+```bash
+codex login
+ocr config set llm.protocol codex
+
+# 可选：覆盖 Codex 模型；不设置时使用 Codex CLI 默认配置
+ocr config set llm.model gpt-5.4
+
+# 可选：多文件 review 时使用常驻 Codex app-server runtime
+ocr config set llm.codex_runtime app_server
+
+ocr review
+```
+
+也可以通过环境变量临时启用：
+
+```bash
+export OCR_LLM_PROTOCOL=codex
+export OCR_CODEX_RUNTIME=app_server  # 可选；默认是 exec
+ocr review
+```
+
+该模式不会读取或转换浏览器会话 token，也不需要 OpenAI Platform API key；它使用官方 Codex CLI 自己的认证、沙箱和模型配置。默认 runtime 是 `exec`，每轮调用 `codex exec`；把 `llm.codex_runtime` 或 `OCR_CODEX_RUNTIME` 设为 `app_server` 后，会使用 Codex 常驻 JSON-RPC app-server transport。执行 `ocr review` 时，两种 runtime 都会产出与 API provider 相同的 OCR 工具调用（`file_read`、`code_search`、`file_read_diff`、`code_comment`、`task_done`），并进入原生 review loop。
+
 **2. 测试连通性**
 
 ```bash

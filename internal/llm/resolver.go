@@ -14,7 +14,7 @@ type ResolvedEndpoint struct {
 	URL       string
 	Token     string
 	Model     string
-	Protocol  string         // "anthropic" or "openai"
+	Protocol  string         // "anthropic", "openai", or "codex"
 	Source    string         // human-readable config source label
 	ExtraBody map[string]any // vendor-specific request body fields
 }
@@ -25,6 +25,8 @@ const (
 	envOCRLLMToken     = "OCR_LLM_TOKEN"
 	envOCRLLMModel     = "OCR_LLM_MODEL"
 	envOCRUseAnthropic = "OCR_USE_ANTHROPIC"
+	envOCRLLMProtocol  = "OCR_LLM_PROTOCOL"
+	envOCRCodexRuntime = "OCR_CODEX_RUNTIME"
 )
 
 // Environment variable names from Claude Code configuration.
@@ -48,19 +50,35 @@ func ResolveEndpoint(configPath string) (ResolvedEndpoint, error) {
 		{"Shell rc file", tryShellRC},
 	}
 
+	// An explicit OCR_LLM_PROTOCOL is a deliberate per-invocation override
+	// (e.g. CI pipelines); it must not be shadowed by a persistent config
+	// file, so the environment strategy is promoted ahead of it. For codex
+	// the env endpoint is complete by itself; for openai/anthropic the env
+	// strategy itself enforces that URL/token/model are also provided.
+	if strings.TrimSpace(os.Getenv(envOCRLLMProtocol)) != "" {
+		strategies[0], strategies[1] = strategies[1], strategies[0]
+	}
+
 	for _, s := range strategies {
 		ep, ok, err := s.fn()
 		if err != nil {
 			return ResolvedEndpoint{}, fmt.Errorf("resolve %s: %w", s.name, err)
 		}
-		if ok && ep.URL != "" && ep.Token != "" && ep.Model != "" {
+		if ok && endpointComplete(ep) {
 			ep.Source = s.name
 			ep.Model = stripModelSuffix(ep.Model)
 			return ep, nil
 		}
 	}
 
-	return ResolvedEndpoint{}, fmt.Errorf("no valid LLM endpoint configured; one of OCR_LLM_URL/OCR_LLM_TOKEN/OCR_LLM_MODEL, ~/.opencodereview/config.json, or ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_MODEL must be set")
+	return ResolvedEndpoint{}, fmt.Errorf("no valid LLM endpoint configured; set OCR_LLM_URL/OCR_LLM_TOKEN/OCR_LLM_MODEL, ~/.opencodereview/config.json, ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_MODEL, or OCR_LLM_PROTOCOL=codex")
+}
+
+func endpointComplete(ep ResolvedEndpoint) bool {
+	if ep.Protocol == "codex" {
+		return true
+	}
+	return ep.URL != "" && ep.Token != "" && ep.Model != ""
 }
 
 // tryOCREnv reads OCR-specific environment variables.
@@ -68,22 +86,54 @@ func tryOCREnv() (ResolvedEndpoint, bool, error) {
 	url := os.Getenv(envOCRLLMURL)
 	token := os.Getenv(envOCRLLMToken)
 	model := os.Getenv(envOCRLLMModel)
+	protocol, err := normalizeProtocol(os.Getenv(envOCRLLMProtocol))
+	if err != nil {
+		return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRLLMProtocol, err)
+	}
+	if protocol == "codex" {
+		extra, err := codexRuntimeExtraBody(os.Getenv(envOCRCodexRuntime), nil)
+		if err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRCodexRuntime, err)
+		}
+		return ResolvedEndpoint{Model: model, Protocol: "codex", Source: "OCR environment", ExtraBody: extra}, true, nil
+	}
 	if url == "" || token == "" || model == "" {
+		// An explicit non-codex protocol is an override request that cannot be
+		// satisfied without a full endpoint; silently falling through to the
+		// config file would resolve a different protocol than the user asked
+		// for, so fail fast instead.
+		if protocol != "" {
+			return ResolvedEndpoint{}, false, fmt.Errorf("%s=%s also requires %s, %s, and %s to be set", envOCRLLMProtocol, protocol, envOCRLLMURL, envOCRLLMToken, envOCRLLMModel)
+		}
 		return ResolvedEndpoint{}, false, nil
 	}
 
-	useAnthropic := true // default true
-	if v := os.Getenv(envOCRUseAnthropic); v != "" {
-		lower := strings.ToLower(v)
-		useAnthropic = lower == "true" || lower == "1" || lower == "yes"
-	}
-
-	protocol := "anthropic"
-	if !useAnthropic {
-		protocol = "openai"
+	// An explicit protocol wins over the legacy use_anthropic toggle.
+	if protocol == "" {
+		useAnthropic := true // default true
+		if v := os.Getenv(envOCRUseAnthropic); v != "" {
+			lower := strings.ToLower(v)
+			useAnthropic = lower == "true" || lower == "1" || lower == "yes"
+		}
+		protocol = "anthropic"
+		if !useAnthropic {
+			protocol = "openai"
+		}
 	}
 
 	return ResolvedEndpoint{URL: url, Token: token, Model: model, Protocol: protocol, Source: "OCR environment"}, true, nil
+}
+
+// normalizeProtocol validates an explicit protocol selection. Empty means
+// "not set" (fall back to legacy use_anthropic semantics).
+func normalizeProtocol(raw string) (string, error) {
+	protocol := strings.ToLower(strings.TrimSpace(raw))
+	switch protocol {
+	case "", "anthropic", "openai", "codex":
+		return protocol, nil
+	default:
+		return "", fmt.Errorf("invalid protocol %q: must be 'anthropic', 'openai', or 'codex'", raw)
+	}
 }
 
 // llmFileConfig represents the llm section in config.json.
@@ -91,6 +141,8 @@ type llmFileConfig struct {
 	URL          string         `json:"url,omitempty"`
 	AuthToken    string         `json:"auth_token,omitempty"`
 	Model        string         `json:"model,omitempty"`
+	Protocol     string         `json:"protocol,omitempty"`
+	CodexRuntime string         `json:"codex_runtime,omitempty"`
 	UseAnthropic *bool          `json:"use_anthropic,omitempty"` // pointer to distinguish unset from false
 	ExtraBody    map[string]any `json:"extra_body,omitempty"`
 }
@@ -114,21 +166,75 @@ func tryOCRConfig(path string) (ResolvedEndpoint, bool, error) {
 		return ResolvedEndpoint{}, false, fmt.Errorf("parse config: %w", err)
 	}
 
+	protocol, err := normalizeProtocol(cfg.Llm.Protocol)
+	if err != nil {
+		return ResolvedEndpoint{}, false, fmt.Errorf("llm.protocol: %w", err)
+	}
+	if protocol == "codex" {
+		extra, err := codexRuntimeExtraBody(cfg.Llm.CodexRuntime, cfg.Llm.ExtraBody)
+		if err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("llm.codex_runtime: %w", err)
+		}
+		return ResolvedEndpoint{Model: cfg.Llm.Model, Protocol: "codex", Source: "OCR config file", ExtraBody: extra}, true, nil
+	}
+
 	if cfg.Llm.URL == "" || cfg.Llm.AuthToken == "" || cfg.Llm.Model == "" {
+		// Same fail-fast contract as OCR_LLM_PROTOCOL: an explicit non-codex
+		// protocol cannot be satisfied without a full endpoint, and silently
+		// falling through to Claude env / shell rc would route reviews to a
+		// different provider than the config file requested.
+		if protocol != "" {
+			return ResolvedEndpoint{}, false, fmt.Errorf("llm.protocol=%s also requires llm.url, llm.auth_token, and llm.model to be set", protocol)
+		}
 		return ResolvedEndpoint{}, false, nil
 	}
 
-	useAnthropic := true // default true
-	if cfg.Llm.UseAnthropic != nil {
-		useAnthropic = *cfg.Llm.UseAnthropic
-	}
-
-	protocol := "anthropic"
-	if !useAnthropic {
-		protocol = "openai"
+	// An explicit protocol wins over the legacy use_anthropic toggle.
+	if protocol == "" {
+		useAnthropic := true // default true
+		if cfg.Llm.UseAnthropic != nil {
+			useAnthropic = *cfg.Llm.UseAnthropic
+		}
+		protocol = "anthropic"
+		if !useAnthropic {
+			protocol = "openai"
+		}
 	}
 
 	return ResolvedEndpoint{URL: cfg.Llm.URL, Token: cfg.Llm.AuthToken, Model: cfg.Llm.Model, Protocol: protocol, Source: "OCR config file", ExtraBody: cfg.Llm.ExtraBody}, true, nil
+}
+
+func codexRuntimeExtraBody(runtime string, base map[string]any) (map[string]any, error) {
+	extra := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		extra[k] = v
+	}
+	// A codex_runtime carried inside extra_body reaches CodexClient.runtime()
+	// through the same key, so it must pass the same validation as the
+	// dedicated setting. The dedicated setting wins when both are present.
+	runtime = strings.TrimSpace(runtime)
+	if runtime == "" {
+		if fromExtra, ok := extra["codex_runtime"]; ok {
+			s, isString := fromExtra.(string)
+			if !isString {
+				return nil, fmt.Errorf("invalid codex runtime %#v in extra_body: must be a string", fromExtra)
+			}
+			runtime = s
+		}
+	}
+	switch normalized := strings.ToLower(strings.TrimSpace(runtime)); normalized {
+	case "":
+		delete(extra, "codex_runtime")
+	case codexRuntimeExec:
+		extra["codex_runtime"] = codexRuntimeExec
+	case "app_server", "app-server", "appserver":
+		extra["codex_runtime"] = codexRuntimeAppServer
+	default:
+		// A typo like "app_servr" would otherwise be stored verbatim and the
+		// client would silently select the exec runtime.
+		return nil, fmt.Errorf("invalid codex runtime %q: must be 'exec' or 'app_server'", runtime)
+	}
+	return extra, nil
 }
 
 // tryCCEnv reads Claude Code environment variables.
