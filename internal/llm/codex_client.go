@@ -135,10 +135,8 @@ func (c *CodexClient) appServerTextCompletion(ctx context.Context, req ChatReque
 }
 
 func (c *CodexClient) runCodexAppServer(ctx context.Context, model, prompt string, outputSchema []byte) (string, error) {
-	client, err := c.appServerClient()
-	if err != nil {
-		return "", err
-	}
+	// Apply the request timeout before acquiring the client so that app-server
+	// startup (process spawn + initialize handshake) is also bounded by it.
 	runCtx := ctx
 	cancel := func() {}
 	if c.cfg.Timeout > 0 {
@@ -146,26 +144,48 @@ func (c *CodexClient) runCodexAppServer(ctx context.Context, model, prompt strin
 	}
 	defer cancel()
 
-	return client.Complete(runCtx, codexAppServerCompletion{
+	client, err := c.appServerClient(runCtx)
+	if err != nil {
+		return "", err
+	}
+
+	text, err := client.Complete(runCtx, codexAppServerCompletion{
 		Model:        c.modelFor(model),
 		RepoDir:      c.repoDir(),
 		Prompt:       prompt,
 		OutputSchema: outputSchema,
 	})
+	if err != nil && client.Closed() {
+		// The app-server process died; drop the cached client so the next
+		// completion restarts it instead of reusing a dead pipe.
+		c.dropAppServerClient(client)
+	}
+	return text, err
 }
 
-func (c *CodexClient) appServerClient() (*codexAppServerClient, error) {
+func (c *CodexClient) appServerClient(ctx context.Context) (*codexAppServerClient, error) {
 	c.appServerMu.Lock()
 	defer c.appServerMu.Unlock()
-	if c.appServer != nil {
+	if c.appServer != nil && !c.appServer.Closed() {
 		return c.appServer, nil
 	}
-	client, err := startCodexAppServer()
+	c.appServer = nil
+	client, err := startCodexAppServer(ctx)
 	if err != nil {
 		return nil, err
 	}
 	c.appServer = client
 	return client, nil
+}
+
+// dropAppServerClient clears the cached client if it is still the given one,
+// forcing the next call to start a fresh app-server process.
+func (c *CodexClient) dropAppServerClient(client *codexAppServerClient) {
+	c.appServerMu.Lock()
+	if c.appServer == client {
+		c.appServer = nil
+	}
+	c.appServerMu.Unlock()
 }
 
 func (c *CodexClient) runCodex(ctx context.Context, model, schemaPath, outputPath, prompt string) error {
@@ -302,14 +322,11 @@ func codexToolCallsToChatResponse(raw []byte, tools []ToolDef, model string) (*C
 		return nil, fmt.Errorf("parse codex tool calls: %w", err)
 	}
 	if len(out.ToolCalls) == 0 {
-		return toolCallChatResponse(model, ToolCall{
-			ID:   "codex_task_done",
-			Type: "function",
-			Function: FunctionCall{
-				Name:      "task_done",
-				Arguments: `{"state":"DONE"}`,
-			},
-		}), nil
+		// The provider instruction requires an explicit task_done call when the
+		// review is complete. An empty array indicates schema drift, truncation,
+		// or a malformed response — surface it so the agent's retry path runs
+		// instead of silently marking the review done.
+		return nil, fmt.Errorf("parse codex tool calls: empty tool_calls; expected an explicit task_done call")
 	}
 
 	allowed := allowedCodexTools(tools)
@@ -358,12 +375,16 @@ func normalizeCodexArguments(raw json.RawMessage) (string, error) {
 			return "", err
 		}
 		args = strings.TrimSpace(decoded)
-		if args == "" {
+		if args == "" || args == "null" {
 			args = "{}"
 		}
 	}
-	if !json.Valid([]byte(args)) {
-		return "", fmt.Errorf("not valid JSON")
+	// Downstream tool execution unmarshals arguments into a JSON object, so
+	// reject arrays/strings/numbers here at the provider boundary rather than
+	// letting them fail later as tool errors and retry loops.
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(args), &obj); err != nil {
+		return "", fmt.Errorf("tool arguments must be a JSON object: %w", err)
 	}
 	return compactJSON(args)
 }

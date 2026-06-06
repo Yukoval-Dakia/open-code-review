@@ -114,10 +114,11 @@ func TestBuildCodexAppServerTurnStartParams(t *testing.T) {
 }
 
 func TestCodexAppServerAccumulatorReturnsFinalAgentMessage(t *testing.T) {
-	acc := newCodexAppServerTurnAccumulator()
+	acc := newCodexAppServerTurnAccumulator("thread-1")
 	acc.HandleNotification(map[string]any{
 		"method": "item/completed",
 		"params": map[string]any{
+			"threadId": "thread-1",
 			"item": map[string]any{
 				"type":  "agentMessage",
 				"text":  `{"tool_calls":[{"name":"task_done","arguments":"{\"state\":\"DONE\"}"}]}`,
@@ -129,6 +130,44 @@ func TestCodexAppServerAccumulatorReturnsFinalAgentMessage(t *testing.T) {
 	got := acc.FinalText()
 	if !strings.Contains(got, `"tool_calls"`) {
 		t.Fatalf("FinalText() = %q, want final tool call JSON", got)
+	}
+}
+
+func TestCodexAppServerAccumulatorIgnoresOtherThreads(t *testing.T) {
+	acc := newCodexAppServerTurnAccumulator("thread-2")
+
+	// Stale events from an earlier canceled turn on a different thread must
+	// not contaminate this turn's state.
+	acc.HandleNotification(map[string]any{
+		"method": "item/completed",
+		"params": map[string]any{
+			"threadId": "thread-1",
+			"item": map[string]any{
+				"type":  "agentMessage",
+				"text":  "stale answer",
+				"phase": "final_answer",
+			},
+		},
+	})
+	acc.HandleNotification(map[string]any{
+		"method": "turn/completed",
+		"params": map[string]any{"threadId": "thread-1"},
+	})
+
+	if acc.Completed() {
+		t.Fatalf("accumulator completed from another thread's turn/completed")
+	}
+	if got := acc.FinalText(); got != "" {
+		t.Fatalf("FinalText() = %q, want empty (stale thread ignored)", got)
+	}
+
+	// Events without a recognizable thread id are still accepted.
+	acc.HandleNotification(map[string]any{
+		"method": "turn/completed",
+		"params": map[string]any{},
+	})
+	if !acc.Completed() {
+		t.Fatalf("accumulator ignored turn/completed without thread id")
 	}
 }
 
@@ -211,17 +250,36 @@ func TestCodexToolCallsToChatResponseRejectsUnknownToolCalls(t *testing.T) {
 	}
 }
 
-func TestCodexToolCallsToChatResponseEmitsTaskDoneForEmptyToolCalls(t *testing.T) {
-	resp, err := codexToolCallsToChatResponse([]byte(`{"tool_calls":[]}`), []ToolDef{testCodexTool("task_done")}, "gpt-5.4")
-	if err != nil {
-		t.Fatalf("codexToolCallsToChatResponse returned error: %v", err)
+func TestCodexToolCallsToChatResponseRejectsEmptyToolCalls(t *testing.T) {
+	// An empty array bypasses the explicit task_done contract (schema drift,
+	// truncation, or malformed output) and must surface as an error so the
+	// agent retry path runs instead of silently completing the review.
+	_, err := codexToolCallsToChatResponse([]byte(`{"tool_calls":[]}`), []ToolDef{testCodexTool("task_done")}, "gpt-5.4")
+	if err == nil {
+		t.Fatalf("codexToolCallsToChatResponse returned nil error for empty tool_calls")
 	}
-	calls := resp.ToolCalls()
-	if len(calls) != 1 {
-		t.Fatalf("tool calls = %d, want 1", len(calls))
+}
+
+func TestCodexToolCallsToChatResponseRejectsNonObjectArguments(t *testing.T) {
+	for _, args := range []string{`[1,2]`, `"[]"`, `42`, `true`, `"\"text\""`} {
+		_, err := codexToolCallsToChatResponse([]byte(`{
+			"tool_calls": [{"name": "file_read", "arguments": `+args+`}]
+		}`), []ToolDef{testCodexTool("file_read")}, "gpt-5.4")
+		if err == nil {
+			t.Fatalf("codexToolCallsToChatResponse accepted non-object arguments %s", args)
+		}
 	}
-	if calls[0].Function.Name != "task_done" {
-		t.Fatalf("tool name = %q, want task_done", calls[0].Function.Name)
+}
+
+func TestNormalizeCodexArgumentsMapsNullVariantsToEmptyObject(t *testing.T) {
+	for _, raw := range []string{``, `null`, `"null"`, `""`} {
+		got, err := normalizeCodexArguments(json.RawMessage(raw))
+		if err != nil {
+			t.Fatalf("normalizeCodexArguments(%q) returned error: %v", raw, err)
+		}
+		if got != "{}" {
+			t.Fatalf("normalizeCodexArguments(%q) = %q, want {}", raw, got)
+		}
 	}
 }
 

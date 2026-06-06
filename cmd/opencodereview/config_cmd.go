@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Default config file location: ~/.opencodereview/config.json
@@ -134,9 +135,21 @@ func setConfigValue(cfg *Config, key, value string) error {
 	case "llm.model", "llm.Model":
 		cfg.Llm.Model = value
 	case "llm.protocol", "llm.Protocol":
-		cfg.Llm.Protocol = value
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "anthropic", "openai", "codex":
+			cfg.Llm.Protocol = v
+		default:
+			return fmt.Errorf("invalid llm.protocol value %q: must be 'anthropic', 'openai', or 'codex'", value)
+		}
 	case "llm.codex_runtime", "llm.CodexRuntime":
-		cfg.Llm.CodexRuntime = value
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "exec", "app_server", "app-server", "appserver":
+			cfg.Llm.CodexRuntime = v
+		default:
+			return fmt.Errorf("invalid llm.codex_runtime value %q: must be 'exec' or 'app_server'", value)
+		}
 	case "llm.use_anthropic", "llm.UseAnthropic":
 		b, err := strconv.ParseBool(value)
 		if err != nil {

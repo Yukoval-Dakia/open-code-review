@@ -21,3 +21,27 @@ func TestSetConfigValueSupportsCodexRuntime(t *testing.T) {
 		t.Fatalf("codex_runtime = %q, want app_server", cfg.Llm.CodexRuntime)
 	}
 }
+
+func TestSetConfigValueRejectsInvalidProtocol(t *testing.T) {
+	cfg := &Config{}
+	if err := setConfigValue(cfg, "llm.protocol", "gemini"); err == nil {
+		t.Fatalf("expected error for invalid llm.protocol value, got nil")
+	}
+}
+
+func TestSetConfigValueNormalizesProtocolCase(t *testing.T) {
+	cfg := &Config{}
+	if err := setConfigValue(cfg, "llm.protocol", " OpenAI "); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Llm.Protocol != "openai" {
+		t.Fatalf("protocol = %q, want openai", cfg.Llm.Protocol)
+	}
+}
+
+func TestSetConfigValueRejectsInvalidCodexRuntime(t *testing.T) {
+	cfg := &Config{}
+	if err := setConfigValue(cfg, "llm.codex_runtime", "websocket"); err == nil {
+		t.Fatalf("expected error for invalid llm.codex_runtime value, got nil")
+	}
+}

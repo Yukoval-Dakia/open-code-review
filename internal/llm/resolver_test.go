@@ -208,3 +208,80 @@ func TestResolveEndpoint_OCREnvCodexRuntimeAppServer(t *testing.T) {
 		t.Fatalf("codex_runtime = %#v, want app_server", ep.ExtraBody["codex_runtime"])
 	}
 }
+
+func TestResolveEndpoint_OCREnvExplicitProtocolOverridesUseAnthropic(t *testing.T) {
+	t.Setenv("OCR_LLM_URL", "https://api.example.com/v1/chat/completions")
+	t.Setenv("OCR_LLM_TOKEN", "test-token")
+	t.Setenv("OCR_LLM_MODEL", "gpt-5.4")
+	t.Setenv("OCR_LLM_PROTOCOL", "openai")
+	t.Setenv("OCR_USE_ANTHROPIC", "") // unset legacy toggle (would default to anthropic)
+
+	ep, err := ResolveEndpoint(filepath.Join(t.TempDir(), "nonexistent.json"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Protocol != "openai" {
+		t.Errorf("protocol = %q, want openai (explicit llm.protocol must win over use_anthropic default)", ep.Protocol)
+	}
+}
+
+func TestResolveEndpoint_OCREnvInvalidProtocolFails(t *testing.T) {
+	t.Setenv("OCR_LLM_URL", "https://api.example.com")
+	t.Setenv("OCR_LLM_TOKEN", "test-token")
+	t.Setenv("OCR_LLM_MODEL", "gpt-5.4")
+	t.Setenv("OCR_LLM_PROTOCOL", "gemini")
+
+	if _, err := ResolveEndpoint(filepath.Join(t.TempDir(), "nonexistent.json")); err == nil {
+		t.Fatalf("expected error for invalid OCR_LLM_PROTOCOL, got nil")
+	}
+}
+
+func TestResolveEndpoint_ConfigFileExplicitProtocolHonored(t *testing.T) {
+	t.Setenv("OCR_LLM_URL", "")
+	t.Setenv("OCR_LLM_TOKEN", "")
+	t.Setenv("OCR_LLM_MODEL", "")
+	t.Setenv("OCR_LLM_PROTOCOL", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_MODEL", "")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := map[string]any{"llm": map[string]any{
+		"url":        "https://api.example.com/v1/chat/completions",
+		"auth_token": "test-token",
+		"model":      "gpt-5.4",
+		"protocol":   "openai",
+	}}
+	data, _ := json.Marshal(cfg)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ep, err := ResolveEndpoint(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Protocol != "openai" {
+		t.Errorf("protocol = %q, want openai (llm.protocol must not be silently ignored)", ep.Protocol)
+	}
+}
+
+func TestResolveEndpoint_ConfigFileInvalidProtocolFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := map[string]any{"llm": map[string]any{
+		"url":        "https://api.example.com",
+		"auth_token": "test-token",
+		"model":      "gpt-5.4",
+		"protocol":   "gemini",
+	}}
+	data, _ := json.Marshal(cfg)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ResolveEndpoint(path); err == nil {
+		t.Fatalf("expected error for invalid llm.protocol in config file, got nil")
+	}
+}

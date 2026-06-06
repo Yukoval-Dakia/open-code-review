@@ -77,26 +77,43 @@ func tryOCREnv() (ResolvedEndpoint, bool, error) {
 	url := os.Getenv(envOCRLLMURL)
 	token := os.Getenv(envOCRLLMToken)
 	model := os.Getenv(envOCRLLMModel)
-	protocolEnv := strings.ToLower(strings.TrimSpace(os.Getenv(envOCRLLMProtocol)))
-	if protocolEnv == "codex" {
+	protocol, err := normalizeProtocol(os.Getenv(envOCRLLMProtocol))
+	if err != nil {
+		return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRLLMProtocol, err)
+	}
+	if protocol == "codex" {
 		return ResolvedEndpoint{Model: model, Protocol: "codex", Source: "OCR environment", ExtraBody: codexRuntimeExtraBody(os.Getenv(envOCRCodexRuntime), nil)}, true, nil
 	}
 	if url == "" || token == "" || model == "" {
 		return ResolvedEndpoint{}, false, nil
 	}
 
-	useAnthropic := true // default true
-	if v := os.Getenv(envOCRUseAnthropic); v != "" {
-		lower := strings.ToLower(v)
-		useAnthropic = lower == "true" || lower == "1" || lower == "yes"
-	}
-
-	protocol := "anthropic"
-	if !useAnthropic {
-		protocol = "openai"
+	// An explicit protocol wins over the legacy use_anthropic toggle.
+	if protocol == "" {
+		useAnthropic := true // default true
+		if v := os.Getenv(envOCRUseAnthropic); v != "" {
+			lower := strings.ToLower(v)
+			useAnthropic = lower == "true" || lower == "1" || lower == "yes"
+		}
+		protocol = "anthropic"
+		if !useAnthropic {
+			protocol = "openai"
+		}
 	}
 
 	return ResolvedEndpoint{URL: url, Token: token, Model: model, Protocol: protocol, Source: "OCR environment"}, true, nil
+}
+
+// normalizeProtocol validates an explicit protocol selection. Empty means
+// "not set" (fall back to legacy use_anthropic semantics).
+func normalizeProtocol(raw string) (string, error) {
+	protocol := strings.ToLower(strings.TrimSpace(raw))
+	switch protocol {
+	case "", "anthropic", "openai", "codex":
+		return protocol, nil
+	default:
+		return "", fmt.Errorf("invalid protocol %q: must be 'anthropic', 'openai', or 'codex'", raw)
+	}
 }
 
 // llmFileConfig represents the llm section in config.json.
@@ -129,7 +146,10 @@ func tryOCRConfig(path string) (ResolvedEndpoint, bool, error) {
 		return ResolvedEndpoint{}, false, fmt.Errorf("parse config: %w", err)
 	}
 
-	protocol := strings.ToLower(strings.TrimSpace(cfg.Llm.Protocol))
+	protocol, err := normalizeProtocol(cfg.Llm.Protocol)
+	if err != nil {
+		return ResolvedEndpoint{}, false, fmt.Errorf("llm.protocol: %w", err)
+	}
 	if protocol == "codex" {
 		return ResolvedEndpoint{Model: cfg.Llm.Model, Protocol: "codex", Source: "OCR config file", ExtraBody: codexRuntimeExtraBody(cfg.Llm.CodexRuntime, cfg.Llm.ExtraBody)}, true, nil
 	}
@@ -138,14 +158,16 @@ func tryOCRConfig(path string) (ResolvedEndpoint, bool, error) {
 		return ResolvedEndpoint{}, false, nil
 	}
 
-	useAnthropic := true // default true
-	if cfg.Llm.UseAnthropic != nil {
-		useAnthropic = *cfg.Llm.UseAnthropic
-	}
-
-	protocol = "anthropic"
-	if !useAnthropic {
-		protocol = "openai"
+	// An explicit protocol wins over the legacy use_anthropic toggle.
+	if protocol == "" {
+		useAnthropic := true // default true
+		if cfg.Llm.UseAnthropic != nil {
+			useAnthropic = *cfg.Llm.UseAnthropic
+		}
+		protocol = "anthropic"
+		if !useAnthropic {
+			protocol = "openai"
+		}
 	}
 
 	return ResolvedEndpoint{URL: cfg.Llm.URL, Token: cfg.Llm.AuthToken, Model: cfg.Llm.Model, Protocol: protocol, Source: "OCR config file", ExtraBody: cfg.Llm.ExtraBody}, true, nil
