@@ -130,6 +130,33 @@ Config is stored in `~/.opencodereview/config.json`.
 
 It is also compatible with Claude Code environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`) and parses `~/.zshrc` / `~/.bashrc` for those exports.
 
+**Use a Codex subscription**
+
+If you have already signed in with the official Codex CLI, OCR can use Codex as a first-class LLM provider alongside OpenAI and Anthropic:
+
+```bash
+codex login
+ocr config set llm.protocol codex
+
+# Optional: override the Codex model; omit this to use the Codex CLI default
+ocr config set llm.model gpt-5.4
+
+# Optional: use the persistent Codex app-server runtime for multi-file reviews
+ocr config set llm.codex_runtime app_server
+
+ocr review
+```
+
+You can also enable it temporarily with an environment variable:
+
+```bash
+export OCR_LLM_PROTOCOL=codex
+export OCR_CODEX_RUNTIME=app_server  # optional; defaults to exec
+ocr review
+```
+
+This mode does not read or convert browser session tokens and does not require an OpenAI Platform API key. It uses official Codex CLI authentication, sandboxing, and model configuration. The default runtime is `exec`, which invokes `codex exec` per turn. Set `llm.codex_runtime` or `OCR_CODEX_RUNTIME` to `app_server` to use Codex's persistent JSON-RPC app-server transport. During `ocr review`, both runtimes emit the same OCR tool calls (`file_read`, `code_search`, `file_read_diff`, `code_comment`, and `task_done`) that API providers use, so they run through the native review loop.
+
 **2. Test Connectivity**
 
 ```bash

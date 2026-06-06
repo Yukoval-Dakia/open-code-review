@@ -115,3 +115,96 @@ func TestResolveEndpoint_ConfigFileStripsModelSuffix(t *testing.T) {
 		t.Errorf("expected source %q, got %q", "OCR config file", ep.Source)
 	}
 }
+
+func TestResolveEndpoint_ConfigFileCodexProtocolDoesNotRequireURLOrToken(t *testing.T) {
+	t.Setenv("OCR_LLM_URL", "")
+	t.Setenv("OCR_LLM_TOKEN", "")
+	t.Setenv("OCR_LLM_MODEL", "")
+	t.Setenv("OCR_LLM_PROTOCOL", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_MODEL", "")
+
+	cfg := configFile{
+		Llm: llmFileConfig{
+			Protocol: "codex",
+		},
+	}
+	data, _ := json.Marshal(cfg)
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(cfgPath, data, 0644)
+
+	ep, err := ResolveEndpoint(cfgPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Protocol != "codex" {
+		t.Errorf("expected protocol %q, got %q", "codex", ep.Protocol)
+	}
+	if ep.Model != "" {
+		t.Errorf("expected empty model for Codex default, got %q", ep.Model)
+	}
+}
+
+func TestResolveEndpoint_ConfigFileCodexRuntimeAppServer(t *testing.T) {
+	t.Setenv("OCR_LLM_URL", "")
+	t.Setenv("OCR_LLM_TOKEN", "")
+	t.Setenv("OCR_LLM_MODEL", "")
+	t.Setenv("OCR_LLM_PROTOCOL", "")
+	t.Setenv("OCR_CODEX_RUNTIME", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_MODEL", "")
+
+	cfg := configFile{
+		Llm: llmFileConfig{
+			Protocol:     "codex",
+			CodexRuntime: "app_server",
+		},
+	}
+	data, _ := json.Marshal(cfg)
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(cfgPath, data, 0644)
+
+	ep, err := ResolveEndpoint(cfgPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.ExtraBody["codex_runtime"] != "app_server" {
+		t.Fatalf("codex_runtime = %#v, want app_server", ep.ExtraBody["codex_runtime"])
+	}
+}
+
+func TestResolveEndpoint_OCREnvCodexProtocolDoesNotRequireURLOrToken(t *testing.T) {
+	t.Setenv("OCR_LLM_PROTOCOL", "codex")
+	t.Setenv("OCR_LLM_MODEL", "")
+	t.Setenv("OCR_LLM_URL", "")
+	t.Setenv("OCR_LLM_TOKEN", "")
+
+	ep, err := ResolveEndpoint(filepath.Join(t.TempDir(), "nonexistent.json"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Protocol != "codex" {
+		t.Errorf("expected protocol %q, got %q", "codex", ep.Protocol)
+	}
+	if ep.Source != "OCR environment" {
+		t.Errorf("expected source %q, got %q", "OCR environment", ep.Source)
+	}
+}
+
+func TestResolveEndpoint_OCREnvCodexRuntimeAppServer(t *testing.T) {
+	t.Setenv("OCR_LLM_PROTOCOL", "codex")
+	t.Setenv("OCR_CODEX_RUNTIME", "app_server")
+	t.Setenv("OCR_LLM_MODEL", "")
+	t.Setenv("OCR_LLM_URL", "")
+	t.Setenv("OCR_LLM_TOKEN", "")
+
+	ep, err := ResolveEndpoint(filepath.Join(t.TempDir(), "nonexistent.json"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.ExtraBody["codex_runtime"] != "app_server" {
+		t.Fatalf("codex_runtime = %#v, want app_server", ep.ExtraBody["codex_runtime"])
+	}
+}

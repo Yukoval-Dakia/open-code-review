@@ -14,7 +14,7 @@ type ResolvedEndpoint struct {
 	URL       string
 	Token     string
 	Model     string
-	Protocol  string         // "anthropic" or "openai"
+	Protocol  string         // "anthropic", "openai", or "codex"
 	Source    string         // human-readable config source label
 	ExtraBody map[string]any // vendor-specific request body fields
 }
@@ -25,6 +25,8 @@ const (
 	envOCRLLMToken     = "OCR_LLM_TOKEN"
 	envOCRLLMModel     = "OCR_LLM_MODEL"
 	envOCRUseAnthropic = "OCR_USE_ANTHROPIC"
+	envOCRLLMProtocol  = "OCR_LLM_PROTOCOL"
+	envOCRCodexRuntime = "OCR_CODEX_RUNTIME"
 )
 
 // Environment variable names from Claude Code configuration.
@@ -53,14 +55,21 @@ func ResolveEndpoint(configPath string) (ResolvedEndpoint, error) {
 		if err != nil {
 			return ResolvedEndpoint{}, fmt.Errorf("resolve %s: %w", s.name, err)
 		}
-		if ok && ep.URL != "" && ep.Token != "" && ep.Model != "" {
+		if ok && endpointComplete(ep) {
 			ep.Source = s.name
 			ep.Model = stripModelSuffix(ep.Model)
 			return ep, nil
 		}
 	}
 
-	return ResolvedEndpoint{}, fmt.Errorf("no valid LLM endpoint configured; one of OCR_LLM_URL/OCR_LLM_TOKEN/OCR_LLM_MODEL, ~/.opencodereview/config.json, or ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_MODEL must be set")
+	return ResolvedEndpoint{}, fmt.Errorf("no valid LLM endpoint configured; set OCR_LLM_URL/OCR_LLM_TOKEN/OCR_LLM_MODEL, ~/.opencodereview/config.json, ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_MODEL, or OCR_LLM_PROTOCOL=codex")
+}
+
+func endpointComplete(ep ResolvedEndpoint) bool {
+	if ep.Protocol == "codex" {
+		return true
+	}
+	return ep.URL != "" && ep.Token != "" && ep.Model != ""
 }
 
 // tryOCREnv reads OCR-specific environment variables.
@@ -68,6 +77,10 @@ func tryOCREnv() (ResolvedEndpoint, bool, error) {
 	url := os.Getenv(envOCRLLMURL)
 	token := os.Getenv(envOCRLLMToken)
 	model := os.Getenv(envOCRLLMModel)
+	protocolEnv := strings.ToLower(strings.TrimSpace(os.Getenv(envOCRLLMProtocol)))
+	if protocolEnv == "codex" {
+		return ResolvedEndpoint{Model: model, Protocol: "codex", Source: "OCR environment", ExtraBody: codexRuntimeExtraBody(os.Getenv(envOCRCodexRuntime), nil)}, true, nil
+	}
 	if url == "" || token == "" || model == "" {
 		return ResolvedEndpoint{}, false, nil
 	}
@@ -91,6 +104,8 @@ type llmFileConfig struct {
 	URL          string         `json:"url,omitempty"`
 	AuthToken    string         `json:"auth_token,omitempty"`
 	Model        string         `json:"model,omitempty"`
+	Protocol     string         `json:"protocol,omitempty"`
+	CodexRuntime string         `json:"codex_runtime,omitempty"`
 	UseAnthropic *bool          `json:"use_anthropic,omitempty"` // pointer to distinguish unset from false
 	ExtraBody    map[string]any `json:"extra_body,omitempty"`
 }
@@ -114,6 +129,11 @@ func tryOCRConfig(path string) (ResolvedEndpoint, bool, error) {
 		return ResolvedEndpoint{}, false, fmt.Errorf("parse config: %w", err)
 	}
 
+	protocol := strings.ToLower(strings.TrimSpace(cfg.Llm.Protocol))
+	if protocol == "codex" {
+		return ResolvedEndpoint{Model: cfg.Llm.Model, Protocol: "codex", Source: "OCR config file", ExtraBody: codexRuntimeExtraBody(cfg.Llm.CodexRuntime, cfg.Llm.ExtraBody)}, true, nil
+	}
+
 	if cfg.Llm.URL == "" || cfg.Llm.AuthToken == "" || cfg.Llm.Model == "" {
 		return ResolvedEndpoint{}, false, nil
 	}
@@ -123,12 +143,24 @@ func tryOCRConfig(path string) (ResolvedEndpoint, bool, error) {
 		useAnthropic = *cfg.Llm.UseAnthropic
 	}
 
-	protocol := "anthropic"
+	protocol = "anthropic"
 	if !useAnthropic {
 		protocol = "openai"
 	}
 
 	return ResolvedEndpoint{URL: cfg.Llm.URL, Token: cfg.Llm.AuthToken, Model: cfg.Llm.Model, Protocol: protocol, Source: "OCR config file", ExtraBody: cfg.Llm.ExtraBody}, true, nil
+}
+
+func codexRuntimeExtraBody(runtime string, base map[string]any) map[string]any {
+	extra := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		extra[k] = v
+	}
+	runtime = strings.ToLower(strings.TrimSpace(runtime))
+	if runtime != "" {
+		extra["codex_runtime"] = runtime
+	}
+	return extra
 }
 
 // tryCCEnv reads Claude Code environment variables.

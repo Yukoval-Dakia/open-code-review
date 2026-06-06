@@ -80,6 +80,8 @@ type LlmConfig struct {
 	URL          string         `json:"url,omitempty"`
 	AuthToken    string         `json:"auth_token,omitempty"`
 	Model        string         `json:"model,omitempty"`
+	Protocol     string         `json:"protocol,omitempty"`      // anthropic, openai, or codex
+	CodexRuntime string         `json:"codex_runtime,omitempty"` // exec or app_server
 	UseAnthropic *bool          `json:"use_anthropic,omitempty"` // nil = default true; false = OpenAI protocol
 	ExtraBody    map[string]any `json:"extra_body,omitempty"`
 }
@@ -131,6 +133,10 @@ func setConfigValue(cfg *Config, key, value string) error {
 		cfg.Llm.AuthToken = value
 	case "llm.model", "llm.Model":
 		cfg.Llm.Model = value
+	case "llm.protocol", "llm.Protocol":
+		cfg.Llm.Protocol = value
+	case "llm.codex_runtime", "llm.CodexRuntime":
+		cfg.Llm.CodexRuntime = value
 	case "llm.use_anthropic", "llm.UseAnthropic":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
@@ -166,7 +172,7 @@ func setConfigValue(cfg *Config, key, value string) error {
 		}
 		cfg.Llm.ExtraBody = m
 	default:
-		return fmt.Errorf("unknown config key: %s\nSupported keys: llm.url, llm.auth_token, llm.model, llm.use_anthropic, llm.extra_body, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging", key)
+		return fmt.Errorf("unknown config key: %s\nSupported keys: llm.url, llm.auth_token, llm.model, llm.protocol, llm.codex_runtime, llm.use_anthropic, llm.extra_body, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging", key)
 	}
 	return nil
 }
