@@ -157,6 +157,33 @@ ocr review
 
 This mode does not read or convert browser session tokens and does not require an OpenAI Platform API key. It uses official Codex CLI authentication, sandboxing, and model configuration. The default runtime is `exec`, which invokes `codex exec` per turn. Set `llm.codex_runtime` or `OCR_CODEX_RUNTIME` to `app_server` to use Codex's persistent JSON-RPC app-server transport. During `ocr review`, both runtimes emit the same OCR tool calls (`file_read`, `code_search`, `file_read_diff`, `code_comment`, and `task_done`) that API providers use, so they run through the native review loop.
 
+**Use a Claude Code subscription**
+
+If you have already signed in with the official Claude Code CLI, OCR can use `claude -p` as a first-class LLM provider alongside OpenAI, Anthropic, and Codex:
+
+```bash
+claude
+ocr config set llm.protocol claude
+
+# Optional: override the Claude Code model; omit this to use the Claude Code CLI default
+ocr config set llm.model sonnet
+
+# Optional: use the persistent Claude stream-json runtime for multi-file reviews
+ocr config set llm.claude_runtime app_server
+
+ocr review
+```
+
+You can also enable it temporarily with environment variables:
+
+```bash
+export OCR_LLM_PROTOCOL=claude
+export OCR_CLAUDE_RUNTIME=app_server  # optional; defaults to exec
+ocr review
+```
+
+This mode does not read or convert browser session tokens and does not require an Anthropic API key. It uses official Claude Code CLI authentication and model configuration. The default runtime is `exec`, which invokes `claude -p` per turn. Set `llm.claude_runtime` or `OCR_CLAUDE_RUNTIME` to `app_server` to keep a Claude Code `stream-json` input/output process alive across turns. During `ocr review`, both runtimes emit the same OCR tool calls (`file_read`, `code_search`, `file_read_diff`, `code_comment`, and `task_done`) that API providers use, so they run through the native review loop.
+
 **2. Test Connectivity**
 
 ```bash
@@ -354,6 +381,9 @@ Config file: `~/.opencodereview/config.json`
 | `llm.url` | string | `https://api.openai.com/v1/chat/completions` |
 | `llm.auth_token` | string | `sk-xxxxxxx` |
 | `llm.model` | string | `claude-opus-4-6` |
+| `llm.protocol` | string | `anthropic` \| `openai` \| `codex` \| `claude` |
+| `llm.codex_runtime` | string | `exec` \| `app_server` |
+| `llm.claude_runtime` | string | `exec` \| `app_server` |
 | `llm.use_anthropic` | boolean | `true` \| `false` |
 | `language` | string | `English` \| `Chinese` (default: Chinese) |
 | `telemetry.enabled` | boolean | `true` \| `false` |

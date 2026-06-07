@@ -14,19 +14,20 @@ type ResolvedEndpoint struct {
 	URL       string
 	Token     string
 	Model     string
-	Protocol  string         // "anthropic", "openai", or "codex"
+	Protocol  string         // "anthropic", "openai", "codex", or "claude"
 	Source    string         // human-readable config source label
 	ExtraBody map[string]any // vendor-specific request body fields
 }
 
 // Environment variable names for OCR-specific configuration.
 const (
-	envOCRLLMURL       = "OCR_LLM_URL"
-	envOCRLLMToken     = "OCR_LLM_TOKEN"
-	envOCRLLMModel     = "OCR_LLM_MODEL"
-	envOCRUseAnthropic = "OCR_USE_ANTHROPIC"
-	envOCRLLMProtocol  = "OCR_LLM_PROTOCOL"
-	envOCRCodexRuntime = "OCR_CODEX_RUNTIME"
+	envOCRLLMURL        = "OCR_LLM_URL"
+	envOCRLLMToken      = "OCR_LLM_TOKEN"
+	envOCRLLMModel      = "OCR_LLM_MODEL"
+	envOCRUseAnthropic  = "OCR_USE_ANTHROPIC"
+	envOCRLLMProtocol   = "OCR_LLM_PROTOCOL"
+	envOCRCodexRuntime  = "OCR_CODEX_RUNTIME"
+	envOCRClaudeRuntime = "OCR_CLAUDE_RUNTIME"
 )
 
 // Environment variable names from Claude Code configuration.
@@ -71,11 +72,11 @@ func ResolveEndpoint(configPath string) (ResolvedEndpoint, error) {
 		}
 	}
 
-	return ResolvedEndpoint{}, fmt.Errorf("no valid LLM endpoint configured; set OCR_LLM_URL/OCR_LLM_TOKEN/OCR_LLM_MODEL, ~/.opencodereview/config.json, ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_MODEL, or OCR_LLM_PROTOCOL=codex")
+	return ResolvedEndpoint{}, fmt.Errorf("no valid LLM endpoint configured; set OCR_LLM_URL/OCR_LLM_TOKEN/OCR_LLM_MODEL, ~/.opencodereview/config.json, ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_MODEL, or OCR_LLM_PROTOCOL=codex/claude")
 }
 
 func endpointComplete(ep ResolvedEndpoint) bool {
-	if ep.Protocol == "codex" {
+	if ep.Protocol == "codex" || ep.Protocol == "claude" {
 		return true
 	}
 	return ep.URL != "" && ep.Token != "" && ep.Model != ""
@@ -97,8 +98,15 @@ func tryOCREnv() (ResolvedEndpoint, bool, error) {
 		}
 		return ResolvedEndpoint{Model: model, Protocol: "codex", Source: "OCR environment", ExtraBody: extra}, true, nil
 	}
+	if protocol == "claude" {
+		extra, err := claudeRuntimeExtraBody(os.Getenv(envOCRClaudeRuntime), nil)
+		if err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRClaudeRuntime, err)
+		}
+		return ResolvedEndpoint{Model: model, Protocol: "claude", Source: "OCR environment", ExtraBody: extra}, true, nil
+	}
 	if url == "" || token == "" || model == "" {
-		// An explicit non-codex protocol is an override request that cannot be
+		// An explicit API protocol is an override request that cannot be
 		// satisfied without a full endpoint; silently falling through to the
 		// config file would resolve a different protocol than the user asked
 		// for, so fail fast instead.
@@ -129,22 +137,23 @@ func tryOCREnv() (ResolvedEndpoint, bool, error) {
 func normalizeProtocol(raw string) (string, error) {
 	protocol := strings.ToLower(strings.TrimSpace(raw))
 	switch protocol {
-	case "", "anthropic", "openai", "codex":
+	case "", "anthropic", "openai", "codex", "claude":
 		return protocol, nil
 	default:
-		return "", fmt.Errorf("invalid protocol %q: must be 'anthropic', 'openai', or 'codex'", raw)
+		return "", fmt.Errorf("invalid protocol %q: must be 'anthropic', 'openai', 'codex', or 'claude'", raw)
 	}
 }
 
 // llmFileConfig represents the llm section in config.json.
 type llmFileConfig struct {
-	URL          string         `json:"url,omitempty"`
-	AuthToken    string         `json:"auth_token,omitempty"`
-	Model        string         `json:"model,omitempty"`
-	Protocol     string         `json:"protocol,omitempty"`
-	CodexRuntime string         `json:"codex_runtime,omitempty"`
-	UseAnthropic *bool          `json:"use_anthropic,omitempty"` // pointer to distinguish unset from false
-	ExtraBody    map[string]any `json:"extra_body,omitempty"`
+	URL           string         `json:"url,omitempty"`
+	AuthToken     string         `json:"auth_token,omitempty"`
+	Model         string         `json:"model,omitempty"`
+	Protocol      string         `json:"protocol,omitempty"`
+	CodexRuntime  string         `json:"codex_runtime,omitempty"`
+	ClaudeRuntime string         `json:"claude_runtime,omitempty"`
+	UseAnthropic  *bool          `json:"use_anthropic,omitempty"` // pointer to distinguish unset from false
+	ExtraBody     map[string]any `json:"extra_body,omitempty"`
 }
 
 type configFile struct {
@@ -177,9 +186,16 @@ func tryOCRConfig(path string) (ResolvedEndpoint, bool, error) {
 		}
 		return ResolvedEndpoint{Model: cfg.Llm.Model, Protocol: "codex", Source: "OCR config file", ExtraBody: extra}, true, nil
 	}
+	if protocol == "claude" {
+		extra, err := claudeRuntimeExtraBody(cfg.Llm.ClaudeRuntime, cfg.Llm.ExtraBody)
+		if err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("llm.claude_runtime: %w", err)
+		}
+		return ResolvedEndpoint{Model: cfg.Llm.Model, Protocol: "claude", Source: "OCR config file", ExtraBody: extra}, true, nil
+	}
 
 	if cfg.Llm.URL == "" || cfg.Llm.AuthToken == "" || cfg.Llm.Model == "" {
-		// Same fail-fast contract as OCR_LLM_PROTOCOL: an explicit non-codex
+		// Same fail-fast contract as OCR_LLM_PROTOCOL: an explicit API
 		// protocol cannot be satisfied without a full endpoint, and silently
 		// falling through to Claude env / shell rc would route reviews to a
 		// different provider than the config file requested.
@@ -233,6 +249,37 @@ func codexRuntimeExtraBody(runtime string, base map[string]any) (map[string]any,
 		// A typo like "app_servr" would otherwise be stored verbatim and the
 		// client would silently select the exec runtime.
 		return nil, fmt.Errorf("invalid codex runtime %q: must be 'exec' or 'app_server'", runtime)
+	}
+	return extra, nil
+}
+
+func claudeRuntimeExtraBody(runtime string, base map[string]any) (map[string]any, error) {
+	extra := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		extra[k] = v
+	}
+	// A claude_runtime carried inside extra_body reaches ClaudeClient.runtime()
+	// through the same key, so it must pass the same validation as the
+	// dedicated setting. The dedicated setting wins when both are present.
+	runtime = strings.TrimSpace(runtime)
+	if runtime == "" {
+		if fromExtra, ok := extra["claude_runtime"]; ok {
+			s, isString := fromExtra.(string)
+			if !isString {
+				return nil, fmt.Errorf("invalid claude runtime %#v in extra_body: must be a string", fromExtra)
+			}
+			runtime = s
+		}
+	}
+	switch normalized := strings.ToLower(strings.TrimSpace(runtime)); normalized {
+	case "":
+		delete(extra, "claude_runtime")
+	case claudeRuntimeExec:
+		extra["claude_runtime"] = claudeRuntimeExec
+	case "app_server", "app-server", "appserver":
+		extra["claude_runtime"] = claudeRuntimeAppServer
+	default:
+		return nil, fmt.Errorf("invalid claude runtime %q: must be 'exec' or 'app_server'", runtime)
 	}
 	return extra, nil
 }

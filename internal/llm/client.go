@@ -196,7 +196,8 @@ type ClientConfig struct {
 // --- Factory ---
 
 // NewLLMClient creates the appropriate client based on the resolved endpoint protocol.
-// protocol: "anthropic" -> AnthropicClient, "codex" -> CodexClient, anything else -> OpenAIClient.
+// protocol: "anthropic" -> AnthropicClient, "codex" -> CodexClient,
+// "claude" -> ClaudeClient, anything else -> OpenAIClient.
 func NewLLMClient(ep ResolvedEndpoint) LLMClient {
 	cfg := ClientConfig{
 		URL:       ep.URL,
@@ -209,6 +210,9 @@ func NewLLMClient(ep ResolvedEndpoint) LLMClient {
 	}
 	if ep.Protocol == "codex" {
 		return NewCodexClient(cfg)
+	}
+	if ep.Protocol == "claude" {
+		return NewClaudeClient(cfg)
 	}
 	return NewOpenAIClient(cfg)
 }
