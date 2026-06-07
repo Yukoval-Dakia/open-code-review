@@ -236,6 +236,7 @@ func (c *ClaudeClient) closeAppServerForKey(key string) {
 
 func (c *ClaudeClient) buildExecArgsForModel(model string) []string {
 	args := []string{"-p", "--output-format", "json", "--max-turns", "1"}
+	args = append(args, claudeProviderIsolationArgs()...)
 	if model != "" {
 		args = append(args, "--model", model)
 	}
@@ -289,6 +290,16 @@ func responseHasTaskDone(resp *ChatResponse) bool {
 		}
 	}
 	return false
+}
+
+func claudeProviderIsolationArgs() []string {
+	return []string{
+		"--tools", "",
+		"--disable-slash-commands",
+		"--no-session-persistence",
+		"--strict-mcp-config",
+		"--setting-sources", "user",
+	}
 }
 
 type claudeJSONResult struct {

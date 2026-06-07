@@ -37,6 +37,7 @@ func startClaudeAppServer(ctx context.Context, model, repoDir string) (*claudeAp
 	}
 
 	args := []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--max-turns", "1"}
+	args = append(args, claudeProviderIsolationArgs()...)
 	if model != "" {
 		args = append(args, "--model", model)
 	}

@@ -182,7 +182,7 @@ export OCR_CLAUDE_RUNTIME=app_server  # optional; defaults to exec
 ocr review
 ```
 
-This mode does not read or convert browser session tokens and does not require an Anthropic API key. It uses official Claude Code CLI authentication and model configuration. The default runtime is `exec`, which invokes `claude -p` per turn. Set `llm.claude_runtime` or `OCR_CLAUDE_RUNTIME` to `app_server` to use Claude Code's official `stream-json` input/output format for each non-interactive request, closing stdin after the JSONL user message so the CLI emits its final result. During `ocr review`, both runtimes emit the same OCR tool calls (`file_read`, `code_search`, `file_read_diff`, `code_comment`, and `task_done`) that API providers use, so they run through the native review loop.
+This mode does not read or convert browser session tokens and does not require an Anthropic API key. It uses official Claude Code CLI authentication and model configuration, but disables Claude Code native tools, skills, MCP, and project-level settings so they do not interfere with OCR's own tool protocol. The default runtime is `exec`, which invokes `claude -p` per turn. Set `llm.claude_runtime` or `OCR_CLAUDE_RUNTIME` to `app_server` to use Claude Code's official `stream-json` input/output format for each non-interactive request, closing stdin after the JSONL user message so the CLI emits its final result. During `ocr review`, both runtimes emit the same OCR tool calls (`file_read`, `code_search`, `file_read_diff`, `code_comment`, and `task_done`) that API providers use, so they run through the native review loop.
 
 **2. Test Connectivity**
 
