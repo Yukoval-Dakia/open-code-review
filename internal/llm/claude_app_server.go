@@ -97,20 +97,29 @@ func (c *claudeAppServerClient) Complete(ctx context.Context, prompt string) (st
 		c.stateMu.Unlock()
 	}()
 
-	if err := json.NewEncoder(c.stdin).Encode(claudeStreamJSONUserMessage(prompt)); err != nil {
+	c.stateMu.Lock()
+	stdin := c.stdin
+	if c.closed || stdin == nil {
+		err := c.exitErrorLocked()
+		c.stateMu.Unlock()
+		return "", err
+	}
+	if err := json.NewEncoder(stdin).Encode(claudeStreamJSONUserMessage(prompt)); err != nil {
+		c.stateMu.Unlock()
 		c.Close()
 		return "", fmt.Errorf("write claude stream-json prompt: %w", err)
 	}
 	// Claude Code's stream-json input is JSONL over stdin. Closing stdin after
 	// the user message marks the end of this print-mode turn; otherwise the
 	// process can keep waiting for more input and never emit the final result.
-	if c.stdin != nil {
-		if err := c.stdin.Close(); err != nil {
-			c.Close()
-			return "", fmt.Errorf("close claude stream-json stdin: %w", err)
-		}
+	if err := stdin.Close(); err != nil {
 		c.stdin = nil
+		c.stateMu.Unlock()
+		c.Close()
+		return "", fmt.Errorf("close claude stream-json stdin: %w", err)
 	}
+	c.stdin = nil
+	c.stateMu.Unlock()
 
 	select {
 	case result := <-ch:
@@ -147,8 +156,9 @@ func (c *claudeAppServerClient) Close() {
 	c.stateMu.Unlock()
 
 	if c.stdin != nil {
-		_ = c.stdin.Close()
+		stdin := c.stdin
 		c.stdin = nil
+		_ = stdin.Close()
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
@@ -158,6 +168,10 @@ func (c *claudeAppServerClient) Close() {
 func (c *claudeAppServerClient) exitError() error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
+	return c.exitErrorLocked()
+}
+
+func (c *claudeAppServerClient) exitErrorLocked() error {
 	if c.readErr != nil {
 		return c.readErr
 	}
@@ -189,7 +203,9 @@ func (c *claudeAppServerClient) readLoop(stdout io.Reader) {
 		c.markClosed(fmt.Errorf("read claude stream-json output: %w", err))
 		return
 	}
-	c.markClosed(fmt.Errorf("claude stream-json closed its output stream"))
+	// stdout EOF is expected when the print-mode process exits. Let waitLoop
+	// record the actual process exit status instead of masking it with a less
+	// useful "closed output stream" error.
 }
 
 func (c *claudeAppServerClient) waitLoop() {
@@ -210,6 +226,14 @@ func (c *claudeAppServerClient) deliver(result claudeAppServerResult) {
 	select {
 	case ch <- result:
 	default:
+		select {
+		case <-ch:
+		default:
+		}
+		select {
+		case ch <- result:
+		default:
+		}
 	}
 }
 
@@ -249,17 +273,32 @@ func claudeAppServerResultFromMessage(msg map[string]any) claudeAppServerResult 
 	return result
 }
 
-func claudeStreamJSONUserMessage(prompt string) map[string]any {
-	return map[string]any{
-		"type": "user",
-		"message": map[string]any{
-			"role": "user",
-			"content": []map[string]string{
+func claudeStreamJSONUserMessage(prompt string) claudeStreamJSONInputMessage {
+	return claudeStreamJSONInputMessage{
+		Type: "user",
+		Message: claudeStreamJSONMessage{
+			Role: "user",
+			Content: []claudeStreamJSONContent{
 				{
-					"type": "text",
-					"text": prompt,
+					Type: "text",
+					Text: prompt,
 				},
 			},
 		},
 	}
+}
+
+type claudeStreamJSONInputMessage struct {
+	Type    string                  `json:"type"`
+	Message claudeStreamJSONMessage `json:"message"`
+}
+
+type claudeStreamJSONMessage struct {
+	Role    string                    `json:"role"`
+	Content []claudeStreamJSONContent `json:"content"`
+}
+
+type claudeStreamJSONContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }

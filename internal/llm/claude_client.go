@@ -299,6 +299,7 @@ func claudeProviderIsolationArgs() []string {
 		"--no-session-persistence",
 		"--strict-mcp-config",
 		"--setting-sources", "user",
+		"--effort", "low",
 	}
 }
 
