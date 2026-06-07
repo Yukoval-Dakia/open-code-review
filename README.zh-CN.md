@@ -168,7 +168,7 @@ ocr config set llm.protocol claude
 # 可选：覆盖 Claude Code 模型；不设置时使用 Claude Code CLI 默认配置
 ocr config set llm.model sonnet
 
-# 可选：多文件 review 时使用常驻 Claude stream-json runtime
+# 可选：使用 Claude stream-json runtime
 ocr config set llm.claude_runtime app_server
 
 ocr review
@@ -182,7 +182,7 @@ export OCR_CLAUDE_RUNTIME=app_server  # 可选；默认是 exec
 ocr review
 ```
 
-该模式不会读取或转换浏览器会话 token，也不需要 Anthropic API key；它使用官方 Claude Code CLI 自己的认证和模型配置。默认 runtime 是 `exec`，每轮调用 `claude -p`；把 `llm.claude_runtime` 或 `OCR_CLAUDE_RUNTIME` 设为 `app_server` 后，会使用 Claude Code 官方 `stream-json` 输入/输出模式常驻一个非交互进程。执行 `ocr review` 时，两种 runtime 都会产出与 API provider 相同的 OCR 工具调用（`file_read`、`code_search`、`file_read_diff`、`code_comment`、`task_done`），并进入原生 review loop。
+该模式不会读取或转换浏览器会话 token，也不需要 Anthropic API key；它使用官方 Claude Code CLI 自己的认证和模型配置。默认 runtime 是 `exec`，每轮调用 `claude -p`；把 `llm.claude_runtime` 或 `OCR_CLAUDE_RUNTIME` 设为 `app_server` 后，会使用 Claude Code 官方 `stream-json` 输入/输出格式执行每轮非交互请求，并在写入 JSONL 用户消息后关闭输入流以触发结果输出。执行 `ocr review` 时，两种 runtime 都会产出与 API provider 相同的 OCR 工具调用（`file_read`、`code_search`、`file_read_diff`、`code_comment`、`task_done`），并进入原生 review loop。
 
 **2. 测试连通性**
 

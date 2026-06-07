@@ -188,9 +188,10 @@ func (c *ClaudeClient) runClaudeAppServer(ctx context.Context, model, key, promp
 		return "", err
 	}
 	text, err := client.Complete(runCtx, prompt)
-	if err != nil && client.Closed() {
-		c.dropAppServerClient(key, client)
-	}
+	// The Claude stream-json process receives one JSONL turn and then stdin is
+	// closed. Do not reuse it for later OCR turns; the full OCR conversation is
+	// already represented in each prompt's message history.
+	c.closeAppServerForKey(key)
 	return text, err
 }
 

@@ -100,6 +100,16 @@ func (c *claudeAppServerClient) Complete(ctx context.Context, prompt string) (st
 		c.Close()
 		return "", fmt.Errorf("write claude stream-json prompt: %w", err)
 	}
+	// Claude Code's stream-json input is JSONL over stdin. Closing stdin after
+	// the user message marks the end of this print-mode turn; otherwise the
+	// process can keep waiting for more input and never emit the final result.
+	if c.stdin != nil {
+		if err := c.stdin.Close(); err != nil {
+			c.Close()
+			return "", fmt.Errorf("close claude stream-json stdin: %w", err)
+		}
+		c.stdin = nil
+	}
 
 	select {
 	case result := <-ch:
@@ -137,6 +147,7 @@ func (c *claudeAppServerClient) Close() {
 
 	if c.stdin != nil {
 		_ = c.stdin.Close()
+		c.stdin = nil
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
