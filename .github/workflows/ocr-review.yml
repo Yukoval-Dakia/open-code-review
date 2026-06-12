@@ -45,6 +45,9 @@ jobs:
           fetch-depth: 0  # Full history needed for merge-base diff
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Mark repository as safe directory
+        run: git config --global --add safe.directory '*'
+
       - name: Fetch PR head ref (ensures fork commits are available)
         run: git fetch origin pull/${{ github.event.pull_request.number }}/head
 
