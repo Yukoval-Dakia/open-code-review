@@ -162,6 +162,18 @@ func runReview(args []string) error {
 	// Resolve line numbers by matching existing_code against diff hunks.
 	comments = diff.ResolveLineNumbers(comments, ag.Diffs())
 
+	// Suppress low-severity / low-confidence comments to improve signal-to-noise.
+	// The drop count is reported (never silently truncated); tune or disable via
+	// OCR_MIN_SEVERITY / OCR_MIN_CONFIDENCE / OCR_DISABLE_SEVERITY_FILTER.
+	if cf := loadCommentFilter(); cf.enabled {
+		var dropped int
+		comments, dropped = cf.apply(comments)
+		if dropped > 0 {
+			fmt.Fprintf(os.Stderr, "[ocr] severity filter dropped %d comment(s) below min-severity=%s / min-confidence=%.2f (set OCR_DISABLE_SEVERITY_FILTER=1 to disable)\n",
+				dropped, cf.minSeverityLabel, cf.minConfidence)
+		}
+	}
+
 	// Record summary metrics (files_reviewed is refined by agent.Run).
 	duration := time.Since(startTime)
 	telemetry.RecordReviewDuration(ctx, duration)

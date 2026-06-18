@@ -51,11 +51,27 @@
                 "suggestion_code": {
                   "type": "string",
                   "description": "Corresponding suggested code snippet, maintaining consistent code style."
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "blocker",
+                    "major",
+                    "minor",
+                    "nit"
+                  ],
+                  "description": "Honest severity of the issue. 'blocker': breaks the build, causes data loss, or is a security hole. 'major': a likely bug, incorrect behavior, or test failure. 'minor': a small correctness or maintainability issue. 'nit': style, naming, or formatting preference. Do NOT inflate severity to make a comment seem more important."
+                },
+                "confidence": {
+                  "type": "number",
+                  "description": "Your honest confidence, from 0.0 to 1.0, that this is a real and actionable issue worth the developer's attention. Use a value below 0.7 when you are uncertain. Do not inflate."
                 }
               },
               "required": [
                 "content",
-                "existing_code"
+                "existing_code",
+                "severity",
+                "confidence"
               ]
             }
           }

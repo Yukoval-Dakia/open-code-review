@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/open-code-review/open-code-review/internal/model"
 )
@@ -67,6 +68,13 @@ func ParseComments(args map[string]any) ([]model.LlmComment, string) {
 		}
 		if thinking, ok := obj["thinking"].(string); ok {
 			cm.Thinking = thinking
+		}
+		if severity, ok := obj["severity"].(string); ok {
+			cm.Severity = strings.ToLower(strings.TrimSpace(severity))
+		}
+		// JSON numbers decode to float64 in a map[string]any.
+		if confidence, ok := obj["confidence"].(float64); ok {
+			cm.Confidence = confidence
 		}
 		if path, ok := args["path"].(string); ok {
 			cm.Path = path
