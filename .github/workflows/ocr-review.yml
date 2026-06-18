@@ -65,10 +65,10 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
 
-      - name: Run OpenCodeReview (opencode-go backend)
+      - name: Run OpenCodeReview (zai/bigmodel anthropic backend)
         id: review
         env:
-          OCR_LLM_PROTOCOL: openai
+          OCR_LLM_PROTOCOL: anthropic
           OCR_LLM_URL: ${{ vars.OCR_LLM_URL }}
           OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
           OCR_LLM_MODEL: ${{ vars.OCR_LLM_MODEL }}
