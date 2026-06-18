@@ -7,9 +7,11 @@ func TestGoAnalyzerChangedSymbols(t *testing.T) {
 	src := "package p\n\n" + // line 1
 		"func Foo() {}\n" + // line 3
 		"type Bar struct{}\n" + // line 4
-		"func Untouched() {}\n" // line 5
+		"func Untouched() {}\n" + // line 5
+		"var MyVar = 1\n" + // line 6
+		"const MyConst = 2\n" // line 7
 	a := goAnalyzer{}
-	syms, err := a.ChangedSymbols(src, map[int]bool{3: true, 4: true})
+	syms, err := a.ChangedSymbols(src, map[int]bool{3: true, 4: true, 6: true, 7: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -25,6 +27,12 @@ func TestGoAnalyzerChangedSymbols(t *testing.T) {
 	}
 	if _, ok := names["Untouched"]; ok {
 		t.Errorf("Untouched should not be reported (line 5 not changed)")
+	}
+	if names["MyVar"] != "var" {
+		t.Errorf("MyVar kind = %q, want var", names["MyVar"])
+	}
+	if names["MyConst"] != "const" {
+		t.Errorf("MyConst kind = %q, want const", names["MyConst"])
 	}
 }
 

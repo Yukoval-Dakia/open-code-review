@@ -39,8 +39,12 @@ func (goAnalyzer) ChangedSymbols(content string, changed map[int]bool) ([]Symbol
 				case *ast.TypeSpec:
 					add(s.Name.Name, "type", s.Name.Pos())
 				case *ast.ValueSpec:
+					kind := "var"
+					if d.Tok == token.CONST {
+						kind = "const"
+					}
 					for _, n := range s.Names {
-						add(n.Name, "const", n.Pos())
+						add(n.Name, kind, n.Pos())
 					}
 				}
 			}
@@ -62,7 +66,9 @@ func (goAnalyzer) References(path, content, name string) ([]Reference, error) {
 		if !ok || id.Name != name {
 			return true
 		}
-		// Skip the definition site itself and duplicate lines.
+		// Record at most one reference per line. The definition site is excluded
+		// upstream by the caller (it skips the symbol's own file), so this only
+		// dedupes; it does not itself skip the definition.
 		line := fset.Position(id.Pos()).Line
 		if seen[line] {
 			return true
