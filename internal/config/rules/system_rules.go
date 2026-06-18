@@ -125,10 +125,11 @@ type DetailResolver interface {
 // The first match wins; if none match, it falls back to DefaultRule.
 // Supports full glob syntax including ** for recursive directory matching.
 func (r *SystemRule) Resolve(path string) string {
+	lowerPath := strings.ToLower(path)
 	for _, pr := range r.PathRules {
 		expanded := expandBraces(pr.Pattern)
 		for _, p := range expanded {
-			if matched, _ := doublestar.Match(p, path); matched {
+			if matched, _ := doublestar.Match(strings.ToLower(p), lowerPath); matched {
 				return pr.Rule
 			}
 		}
@@ -137,10 +138,11 @@ func (r *SystemRule) Resolve(path string) string {
 }
 
 func (r *SystemRule) resolveDetail(path string) RuleDetail {
+	lowerPath := strings.ToLower(path)
 	for _, pr := range r.PathRules {
 		expanded := expandBraces(pr.Pattern)
 		for _, p := range expanded {
-			if matched, _ := doublestar.Match(p, path); matched {
+			if matched, _ := doublestar.Match(strings.ToLower(p), lowerPath); matched {
 				return RuleDetail{Rule: pr.Rule, Source: "system", Pattern: pr.Pattern}
 			}
 		}
@@ -382,10 +384,11 @@ func matchProjectRule(pr *ProjectRule, path string) string {
 	if pr == nil {
 		return ""
 	}
+	lowerPath := strings.ToLower(path)
 	for _, entry := range pr.Rules {
 		expanded := expandBraces(entry.Path)
 		for _, p := range expanded {
-			if matched, _ := doublestar.Match(p, path); matched {
+			if matched, _ := doublestar.Match(strings.ToLower(p), lowerPath); matched {
 				return entry.Rule
 			}
 		}
@@ -397,13 +400,14 @@ func matchProjectRuleDetail(pr *ProjectRule, path, source string) *RuleDetail {
 	if pr == nil {
 		return nil
 	}
+	lowerPath := strings.ToLower(path)
 	for _, entry := range pr.Rules {
 		if entry.Rule == "" {
 			continue
 		}
 		expanded := expandBraces(entry.Path)
 		for _, p := range expanded {
-			if matched, _ := doublestar.Match(p, path); matched {
+			if matched, _ := doublestar.Match(strings.ToLower(p), lowerPath); matched {
 				return &RuleDetail{Rule: entry.Rule, Source: source, Pattern: entry.Path}
 			}
 		}

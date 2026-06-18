@@ -4,7 +4,7 @@
 # and posts review comments directly on the PR.
 #
 # Triggers:
-#   - PR opened, synchronized, or reopened
+#   - PR opened (uses pull_request_target for fork secret access)
 #   - Comment on PR containing '/open-code-review' or '@open-code-review'
 #
 # Required secrets:
@@ -18,8 +18,15 @@
 
 name: OpenCodeReview PR Review
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 on:
-  pull_request:
+  # Use pull_request_target instead of pull_request so that secrets are
+  # available even for PRs from forks. This is safe because OCR only reads
+  # the diff and does not execute any code from the PR.
+  pull_request_target:
     types: [opened]
   issue_comment:
     types: [created]
@@ -33,13 +40,13 @@ jobs:
     runs-on: ubuntu-latest
     # Run on PR events, or on comments starting with trigger keywords
     if: |
-      github.event_name == 'pull_request' ||
+      github.event_name == 'pull_request_target' ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/open-code-review')) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '@open-code-review'))
     steps:
       - name: Get PR context
         id: pr-context
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request_target'
         uses: actions/github-script@v7
         with:
           script: |
@@ -58,7 +65,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history needed for merge-base diff
-          ref: ${{ github.event_name != 'pull_request' && steps.pr-context.outputs.head_sha || '' }}
+          ref: ${{ github.event.pull_request.head.sha || steps.pr-context.outputs.head_sha }}
+
+      - name: Fetch PR head ref (ensures fork commits are available)
+        run: git fetch origin pull/${{ github.event.pull_request.number || github.event.issue.number }}/head
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -79,21 +89,23 @@ jobs:
       - name: Run OpenCodeReview
         id: review
         run: |
-          # Get base and head refs from PR context (different for comment triggers)
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          # Get base ref and head SHA from PR context (different for comment triggers)
+          # Note: We use HEAD_SHA instead of origin/${HEAD_REF} to support fork PRs,
+          # because fork branches don't exist on the origin remote.
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
             BASE_REF="${{ github.event.pull_request.base.ref }}"
-            HEAD_REF="${{ github.event.pull_request.head.ref }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           else
             BASE_REF="${{ steps.pr-context.outputs.base_ref }}"
-            HEAD_REF="${{ steps.pr-context.outputs.head_ref }}"
+            HEAD_SHA="${{ steps.pr-context.outputs.head_sha }}"
           fi
 
-          echo "Reviewing PR: ${HEAD_REF} against ${BASE_REF}"
+          echo "Reviewing PR: ${HEAD_SHA} against origin/${BASE_REF}"
 
           # Run OCR in range mode with JSON output
           ocr review \
             --from "origin/${BASE_REF}" \
-            --to "origin/${HEAD_REF}" \
+            --to "${HEAD_SHA}" \
             --format json \
             > /tmp/ocr-result.json 2>/tmp/ocr-stderr.log || true
 
@@ -124,7 +136,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: `⚠️ **OpenCodeReview** encountered an error:\n\`\`\`\n${stderr}\n\`\`\``
+                  body: `⚠️ **OpenCodeReview** encountered an error:\n${fencedBlock(stderr)}`
                 });
               }
               return;
@@ -150,7 +162,7 @@ jobs:
             let commitSha;
             
             // Get commit SHA from event context
-            if (context.eventName === 'pull_request') {
+            if (context.eventName === 'pull_request_target') {
               commitSha = context.payload.pull_request.head.sha;
             } else {
               // For comment events, we need to fetch the PR
@@ -196,27 +208,17 @@ jobs:
                 reviewComment.side = 'RIGHT';
               }
 
-              reviewComments.push(reviewComment);
+              reviewComments.push({ comment, reviewComment });
             }
 
             // Submit as a single PR review with all comments
             const totalCount = comments.length;
             const inlineCount = reviewComments.length;
             const summaryCount = commentsWithoutLine.length;
-            let summaryBody = `🔍 **OpenCodeReview** found **${totalCount}** issue(s) in this PR.`;
-            if (totalCount > 0) {
-              summaryBody += `\n- ✅ ${inlineCount} posted as inline comment(s)`;
-              summaryBody += `\n- 📝 ${summaryCount} posted as summary (missing line info)`;
-            }
-            if (warnings.length > 0) {
-              summaryBody += `\n\n⚠️ ${warnings.length} warning(s) occurred during review.`;
-            }
+            let summaryBody = buildSummaryBody(totalCount, inlineCount, summaryCount, warnings);
 
             // Add comments without line info to summary body
-            for (const { comment, body } of commentsWithoutLine) {
-              summaryBody += '\n\n---\n\n';
-              summaryBody += formatCommentMarkdown(comment);
-            }
+            summaryBody += formatSummaryComments(commentsWithoutLine);
 
             // Statistics tracking
             let successCount = 0;
@@ -231,7 +233,7 @@ jobs:
                 commit_id: commitSha,
                 body: summaryBody,
                 event: 'COMMENT',
-                comments: reviewComments
+                comments: reviewComments.map(({ reviewComment }) => reviewComment)
               });
               successCount = reviewComments.length;
               console.log(`Successfully posted review with ${successCount} inline comments (${commentsWithoutLine.length} in summary)`);
@@ -240,7 +242,7 @@ jobs:
               console.log('Falling back to posting comments individually...');
               
               // Fallback: post comments one by one
-              for (const reviewComment of reviewComments) {
+              for (const { comment, reviewComment } of reviewComments) {
                 try {
                   await github.rest.pulls.createReview({
                     owner: context.repo.owner,
@@ -255,26 +257,27 @@ jobs:
                   console.log(`Successfully posted comment for ${reviewComment.path}`);
                 } catch (innerE) {
                   failedCount++;
-                  failedComments.push({ comment: reviewComment, error: innerE.message });
+                  failedComments.push({ comment, error: innerE.message });
                   console.log(`Failed to post comment for ${reviewComment.path}: ${innerE.message}`);
                 }
               }
               
               // Post summary comment with statistics
-              let finalBody = summaryBody;
+              let finalBody = buildSummaryBody(totalCount, successCount, commentsWithoutLine.length + failedComments.length, warnings);
+              finalBody += formatSummaryComments(commentsWithoutLine);
               finalBody += `\n\n---\n\n📊 **Posting Statistics:**`;
               finalBody += `\n- ✅ Successfully posted: ${successCount} comment(s)`;
               if (failedCount > 0) {
                 finalBody += `\n- ❌ Failed to post: ${failedCount} comment(s)`;
               }
               
-              // Add failed comments details
+              // Add failed comments as summary content so review feedback is not lost.
               if (failedComments.length > 0) {
-                finalBody += '\n\n<details><summary>❌ Failed Comments Details</summary>\n\n';
+                finalBody += '\n\n---\n\n### ⚠️ Inline comments shown in summary';
                 for (const { comment, error } of failedComments) {
-                  finalBody += `- \`${comment.path}\`: ${error}\n`;
+                  finalBody += '\n\n---\n\n';
+                  finalBody += formatCommentMarkdown(comment, error);
                 }
-                finalBody += '\n</details>';
               }
               
               await github.rest.issues.createComment({
@@ -291,29 +294,64 @@ jobs:
               // Add code suggestion if available
               if (comment.suggestion_code && comment.existing_code) {
                 body += '\n\n**Suggestion:**\n';
-                body += '```suggestion\n';
-                body += comment.suggestion_code;
-                if (!comment.suggestion_code.endsWith('\n')) body += '\n';
-                body += '```';
+                body += fencedBlock(comment.suggestion_code, 'suggestion');
               }
 
               return body;
             }
 
-            function formatCommentMarkdown(comment) {
+            function formatCommentMarkdown(comment, error) {
               let md = `### 📄 \`${comment.path}\``;
               if (comment.start_line && comment.end_line) {
                 md += ` (L${comment.start_line}-L${comment.end_line})`;
               }
               md += '\n\n';
+              if (error) {
+                md += `⚠️ GitHub could not post this as an inline comment: ${error}\n\n`;
+              }
               md += comment.content || '';
 
               if (comment.suggestion_code && comment.existing_code) {
                 md += '\n\n<details><summary>💡 Suggested Change</summary>\n\n';
-                md += '**Before:**\n```\n' + comment.existing_code + '\n```\n\n';
-                md += '**After:**\n```\n' + comment.suggestion_code + '\n```\n\n';
+                md += '**Before:**\n' + fencedBlock(comment.existing_code) + '\n\n';
+                md += '**After:**\n' + fencedBlock(comment.suggestion_code) + '\n\n';
                 md += '</details>';
               }
 
               return md;
+            }
+
+            function buildSummaryBody(totalCount, inlineCount, summaryCount, warnings) {
+              let body = `🔍 **OpenCodeReview** found **${totalCount}** issue(s) in this PR.`;
+              if (totalCount > 0) {
+                body += `\n- ✅ ${inlineCount} posted as inline comment(s)`;
+                body += `\n- 📝 ${summaryCount} posted as summary`;
+              }
+              if (warnings.length > 0) {
+                body += `\n\n⚠️ ${warnings.length} warning(s) occurred during review.`;
+              }
+              return body;
+            }
+
+            function formatSummaryComments(summaryComments) {
+              let body = '';
+              for (const { comment } of summaryComments) {
+                body += '\n\n---\n\n';
+                body += formatCommentMarkdown(comment);
+              }
+              return body;
+            }
+
+            function fencedBlock(content, language = '') {
+              const text = String(content || '');
+              const fence = safeFence(text);
+              let block = fence + language + '\n' + text;
+              if (!text.endsWith('\n')) block += '\n';
+              return block + fence;
+            }
+
+            function safeFence(content) {
+              const matches = String(content || '').match(/`+/g) || [];
+              const maxTicks = matches.reduce((max, ticks) => Math.max(max, ticks.length), 0);
+              return '`'.repeat(Math.max(3, maxTicks + 1));
             }

@@ -38,8 +38,21 @@
     ],
     "timeout": 120
   },
+  "REVIEW_FILTER_TASK": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a fact-checker for code review comments.\n\nThese review comments come from an Agent that can invoke tools to obtain the full code context. You can currently only see the code diff.\n\nTherefore, your task is NOT to verify whether all review comments are correct, but to **filter out only those review comments that can be confirmed as incorrect based solely on the current diff**.\n\nFor review comments whose correctness cannot be determined from the diff alone, even if you find them suspicious, you should let them pass — because the Agent may have access to context that you cannot see."
+      },
+      {
+        "role": "user",
+        "content": "### Task\n\nGiven a code diff and a set of review comments, identify those that are **provably incorrect based solely on the diff**.\n\n### Evaluation Principles\n\n**Core principle: You need to falsify, not verify.**\n\n- ✅ Should flag: The diff contains **direct counter-evidence** that proves the key claim of the review comment is wrong\n- ❌ Should NOT flag: The review comment references context not visible in the diff (may have been obtained by the Agent via tools)\n- ❌ Should NOT flag: You merely \"cannot verify\" but also cannot disprove the review comment\n\n### Evaluation Method\n\nFor each review comment, perform the following two steps:\n\n#### Step 1: Fact Check (Veto Rule)\n\n- Only verify claims that are verifiable within the diff\n- Only determine a comment as incorrect when the diff provides counter-evidence. **If a claim involves information outside the diff (such as logic in other files, business semantics, runtime behavior), and the diff contains no evidence contradicting it, do not make a determination.**\n\n⚠️ Fact check fails → Immediately determine as incorrect, skip Step 2.\n\n#### Step 2: Issue Classification\n\nAfter confirming that the facts visible in the diff are accurate, determine whether the description contains a **significant deviation that can be disproved from the diff**:\n\n- Does it misidentify clearly normal code in the diff as a defect?\n- Does it attribute behavior visible in the diff in a way that contradicts the code?\n\n⚠️ Only determine as incorrect when the diff can directly prove the description is wrong.\n\n### Code Diff\n\n```{{path}}\n{{diff}}\n```\n\n### Review Comments\n\n{{comments}}\n\n### Output\n\nReturn all incorrect review comment IDs directly, without any explanation. Use JSON array format:\n\n```json\n[\"id-xxx\", \"id-yyy\"]\n```\n\nIf there are no review comments that can be confirmed as incorrect, return an empty array:\n\n```json\n[]\n```"
+      }
+    ],
+    "timeout": 60
+  },
   "TOOL_REQUEST_WAIT_TIME_MS": 10000,
-  "MAX_TOOL_REQUEST_TIMES": 20,
+  "MAX_TOOL_REQUEST_TIMES": 30,
   "MAX_SUBTASK_EXECUTION_TIME_MINUTES": 5,
   "PLAN_MODE_LINE_THRESHOLD": 50,
   "MAX_TOKENS": 58888,

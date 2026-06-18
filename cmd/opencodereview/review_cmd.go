@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/open-code-review/open-code-review/internal/agent"
@@ -12,6 +13,7 @@ import (
 	"github.com/open-code-review/open-code-review/internal/config/template"
 	"github.com/open-code-review/open-code-review/internal/config/toolsconfig"
 	"github.com/open-code-review/open-code-review/internal/diff"
+	"github.com/open-code-review/open-code-review/internal/gitcmd"
 	"github.com/open-code-review/open-code-review/internal/llm"
 	"github.com/open-code-review/open-code-review/internal/stdout"
 	"github.com/open-code-review/open-code-review/internal/telemetry"
@@ -36,7 +38,7 @@ func runReview(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load default template: %w", err)
 	}
-	if opts.maxTools > tpl.MaxToolRequestTimes {
+	if opts.maxTools > 0 {
 		tpl.MaxToolRequestTimes = opts.maxTools
 	}
 	if err := tpl.Validate(); err != nil {
@@ -46,6 +48,9 @@ func runReview(args []string) error {
 	repoDir, err := resolveRepoDir(opts.repoDir)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
+	}
+	if err := validateReviewRefs(repoDir, opts); err != nil {
+		return err
 	}
 
 	if opts.commit != "" && opts.background == "" {
@@ -79,11 +84,13 @@ func runReview(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load app config: %w", err)
 	}
+	var lang string
 	if appCfg != nil {
-		tpl.ApplyLanguage(appCfg.Language)
+		lang = appCfg.Language
 	}
+	tpl.ApplyLanguage(lang)
 
-	ep, err := llm.ResolveEndpoint(cfgPath)
+	ep, err := llm.ResolveEndpointWithModelOverride(cfgPath, opts.model)
 	if err != nil {
 		return fmt.Errorf("resolve LLM endpoint: %w", err)
 	}
@@ -97,23 +104,24 @@ func runReview(args []string) error {
 	llmClient := llm.NewLLMClient(ep)
 	model := ep.Model
 
+	gitRunner := gitcmd.New(opts.maxGitProcs)
+
 	collector := tool.NewCommentCollector()
 	mode := tool.ParseReviewMode(opts.from, opts.to, opts.commit)
 	ref, _ := mode.RefValue(opts.to, opts.commit)
-	diffMap := make(map[string]string)
 	fileReader := &tool.FileReader{
 		RepoDir: repoDir,
 		Mode:    mode,
 		Ref:     ref,
+		Runner:  gitRunner,
 	}
-	tools := buildToolRegistry(collector, fileReader, diffMap)
+	tools := buildToolRegistry(collector, fileReader)
 
 	ag := agent.New(agent.Args{
 		RepoDir:               repoDir,
 		From:                  opts.from,
 		To:                    opts.to,
 		Commit:                opts.commit,
-		DiffMap:               diffMap,
 		Template:              *tpl,
 		SystemRule:            resolver,
 		FileFilter:            fileFilter,
@@ -127,6 +135,7 @@ func runReview(args []string) error {
 		ConcurrentTaskTimeout: opts.perFileTimeout,
 		Model:                 model,
 		Background:            opts.background,
+		GitRunner:             gitRunner,
 	})
 
 	// Silence progress output during execution; restore before Summary in agent mode.
@@ -172,11 +181,11 @@ func runReview(args []string) error {
 	}
 
 	if opts.outputFormat != "json" {
-		telemetry.PrintTraceSummary(ag.FilesReviewed(), int64(len(comments)), ag.TotalInputTokens(), ag.TotalOutputTokens(), ag.TotalTokensUsed(), duration)
+		telemetry.PrintTraceSummary(ag.FilesReviewed(), int64(len(comments)), ag.TotalInputTokens(), ag.TotalOutputTokens(), ag.TotalTokensUsed(), ag.TotalCacheReadTokens(), ag.TotalCacheWriteTokens(), duration)
 	}
 
 	if opts.outputFormat == "json" {
-		return outputJSONWithWarnings(comments, ag.Warnings(), ag.FilesReviewed(), ag.TotalInputTokens(), ag.TotalOutputTokens(), ag.TotalTokensUsed(), duration)
+		return outputJSONWithWarnings(comments, ag.Warnings(), ag.FilesReviewed(), ag.TotalInputTokens(), ag.TotalOutputTokens(), ag.TotalTokensUsed(), ag.TotalCacheReadTokens(), ag.TotalCacheWriteTokens(), duration)
 	}
 	if opts.audience == "agent" {
 		outputTextWithWarnings(comments, ag.Warnings())
@@ -219,16 +228,45 @@ func requireGitRepo(dir string) error {
 	return nil
 }
 
+func validateReviewRefs(repoDir string, opts reviewOptions) error {
+	refs := []struct {
+		flag string
+		ref  string
+	}{
+		{"--from", opts.from},
+		{"--to", opts.to},
+		{"--commit", opts.commit},
+	}
+	for _, item := range refs {
+		if item.ref == "" {
+			continue
+		}
+		if strings.HasPrefix(item.ref, "-") {
+			return fmt.Errorf("%s value %q is not a valid git ref: refs must not start with '-'", item.flag, item.ref)
+		}
+		if out, err := runGitCmd(repoDir, "rev-parse", "--verify", "--end-of-options", item.ref+"^{commit}"); err != nil {
+			msg := strings.TrimSpace(string(out))
+			if msg != "" {
+				return fmt.Errorf("%s value %q is not a valid commit ref: %s", item.flag, item.ref, msg)
+			}
+			return fmt.Errorf("%s value %q is not a valid commit ref", item.flag, item.ref)
+		}
+	}
+	return nil
+}
+
 func runPreview(repoDir string, opts reviewOptions, fileFilter *rules.FileFilter) error {
+	gitRunner := gitcmd.New(opts.maxGitProcs)
 	ag := agent.New(agent.Args{
 		RepoDir:    repoDir,
 		From:       opts.from,
 		To:         opts.to,
 		Commit:     opts.commit,
 		FileFilter: fileFilter,
+		GitRunner:  gitRunner,
 	})
 
-	preview, err := ag.Preview()
+	preview, err := ag.Preview(context.Background())
 	if err != nil {
 		return fmt.Errorf("preview failed: %w", err)
 	}
@@ -237,18 +275,12 @@ func runPreview(repoDir string, opts reviewOptions, fileFilter *rules.FileFilter
 	return nil
 }
 
-func buildToolRegistry(collector *tool.CommentCollector, fr *tool.FileReader, diffMap map[string]string) tool.Registry {
+func buildToolRegistry(collector *tool.CommentCollector, fr *tool.FileReader) *tool.Registry {
 	reg := tool.NewRegistry()
 	reg.Register(tool.NewFileRead(fr))
 	reg.Register(tool.NewFileFind(fr))
-	reg.Register(tool.NewFileReadDiff())
+	reg.Register(tool.NewFileReadDiff(tool.DiffMap{}))
 	reg.Register(tool.NewCodeSearch(fr))
 	reg.Register(&tool.CodeCommentProvider{Collector: collector})
-
-	// Wire up FileReadDiffProvider with shared diffMap pointer so Agent's loadDiffs populates it.
-	if p, ok := reg[tool.FileReadDiff.Name()].(*tool.FileReadDiffProvider); ok {
-		p.DiffMap = diffMap
-	}
-
 	return reg
 }

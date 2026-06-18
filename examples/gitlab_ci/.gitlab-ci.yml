@@ -2,20 +2,30 @@
 #
 # This pipeline automatically reviews Merge Requests using OpenCodeReview
 # and posts review comments (discussions) directly on the MR diff.
+# Supports both same-repo and forked MR scenarios.
 #
 # Required CI/CD Variables (Settings → CI/CD → Variables):
 #   OCR_LLM_URL        - LLM API endpoint (e.g., https://api.openai.com/v1/chat/completions)
 #   OCR_LLM_AUTH_TOKEN - Authentication token for the LLM API (mark as "Masked")
-#   GITLAB_API_TOKEN   - GitLab Personal/Project Access Token with "api" scope
 #
 # Optional CI/CD Variables:
 #   OCR_LLM_MODEL      - Model name (default: gpt-4o)
+#   GITLAB_API_TOKEN   - GitLab Personal/Project Access Token with "api" scope
+#                        (falls back to CI_JOB_TOKEN if not set)
+#
+# Fork MR Support:
+#   The script uses CI_COMMIT_SHA as the diff target to correctly resolve the
+#   source commit from forked repos. For some GitLab versions, you may need to enable:
+#   Project Settings → CI/CD → General pipelines →
+#     "Run pipelines in the parent project for merge requests from forked projects"
 
 stages:
   - review
 
 code-review:
   stage: review
+  interruptible: true
+  resource_group: mr-review-$CI_MERGE_REQUEST_IID
   image: node:20
   only:
     - merge_requests
@@ -27,7 +37,7 @@ code-review:
 
     # Configure OCR
     - mkdir -p ~/.open-code-review
-    # Gitlab CI/CD does not support setting variables with value length less than 8, so you can't set use_anthropic as a CI variable
+    # Gitlab CI/CD does not support configuring variables with value length less than 8, so you can't set use_anthropic as a CI variable
     - |
       ocr config set llm.url $OCR_LLM_URL
       ocr config set llm.auth_token $OCR_LLM_AUTH_TOKEN
@@ -35,13 +45,14 @@ code-review:
       ocr config set llm.use_anthropic false
       ocr config set llm.extra_body '{"thinking": {"type": "disabled"}}'
 
-    # Run OCR review
+    # Run OCR review (use CI_COMMIT_SHA for --to to support both same-repo and forked MRs)
     - |
       echo "Reviewing MR: ${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME} against ${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
       ocr review \
         --from "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}" \
-        --to "origin/${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME}" \
+        --to "${CI_COMMIT_SHA}" \
         --format json \
+        --audience agent \
         > /tmp/ocr-result.json 2>/tmp/ocr-stderr.log || true
       echo "OCR review completed."
       cat /tmp/ocr-result.json
@@ -58,18 +69,27 @@ code-review:
       GITLAB_URL = os.environ.get("CI_SERVER_URL", "https://gitlab.com")
       PROJECT_ID = os.environ["CI_PROJECT_ID"]
       MR_IID = os.environ["CI_MERGE_REQUEST_IID"]
-      API_TOKEN = os.environ["GITLAB_API_TOKEN"]
+      # Fall back to CI_JOB_TOKEN for fork MR pipelines where GITLAB_API_TOKEN is unavailable
+      API_TOKEN = os.environ.get("GITLAB_API_TOKEN") or os.environ.get("CI_JOB_TOKEN", "")
       SOURCE_BRANCH = os.environ["CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"]
       TARGET_BRANCH = os.environ["CI_MERGE_REQUEST_TARGET_BRANCH_NAME"]
       COMMIT_SHA = os.environ["CI_COMMIT_SHA"]
 
+      if not API_TOKEN:
+          print("ERROR: No API token available (GITLAB_API_TOKEN or CI_JOB_TOKEN). Cannot post comments.", file=sys.stderr)
+          sys.exit(1)
+
       API_BASE = f"{GITLAB_URL}/api/v4/projects/{PROJECT_ID}/merge_requests/{MR_IID}"
+
+      # Determine auth header: PRIVATE-TOKEN for personal/project tokens, JOB-TOKEN for CI_JOB_TOKEN
+      USE_JOB_TOKEN = not os.environ.get("GITLAB_API_TOKEN")
+      AUTH_HEADER = "JOB-TOKEN" if USE_JOB_TOKEN else "PRIVATE-TOKEN"
 
       def api_request(endpoint, data=None, method="POST"):
           """Make a GitLab API request."""
           url = f"{API_BASE}{endpoint}"
           headers = {
-              "PRIVATE-TOKEN": API_TOKEN,
+              AUTH_HEADER: API_TOKEN,
               "Content-Type": "application/json"
           }
           body = json.dumps(data).encode("utf-8") if data else None
@@ -85,16 +105,16 @@ code-review:
           """Post a general note/comment on the MR."""
           return api_request("/notes", {"body": body})
 
-      def post_discussion(path, line, body, base_sha=None, start_sha=None, head_sha=None):
+      def post_discussion(path, line, body, base_sha, start_sha, head_sha):
           """Post an inline discussion on a specific file/line in the MR diff."""
           position = {
               "position_type": "text",
               "new_path": path,
               "old_path": path,
               "new_line": line,
-              "base_sha": base_sha or TARGET_BRANCH,
-              "start_sha": start_sha or TARGET_BRANCH,
-              "head_sha": head_sha or COMMIT_SHA,
+              "base_sha": base_sha,
+              "start_sha": start_sha,
+              "head_sha": head_sha,
           }
           data = {
               "body": body,
@@ -138,7 +158,7 @@ code-review:
 
       # --- Main ---
 
-      # Read OCR result
+      # Read OCR result (skip first line which is summary, not JSON)
       try:
           with open("/tmp/ocr-result.json", "r") as f:
               result = json.load(f)
@@ -168,7 +188,7 @@ code-review:
       diff_refs = None
       try:
           versions_url = f"{API_BASE}/versions"
-          req = urllib.request.Request(versions_url, headers={"PRIVATE-TOKEN": API_TOKEN})
+          req = urllib.request.Request(versions_url, headers={AUTH_HEADER: API_TOKEN})
           with urllib.request.urlopen(req) as resp:
               versions = json.loads(resp.read().decode("utf-8"))
           if versions:
@@ -191,15 +211,11 @@ code-review:
           start_line = comment.get("start_line", end_line)
           body = format_comment(comment)
 
-          if not path or not end_line:
+          if not path or not end_line or not diff_refs:
               failed_comments.append(comment)
               continue
 
-          kwargs = {}
-          if diff_refs:
-              kwargs = diff_refs
-
-          result_resp = post_discussion(path, end_line, body, **kwargs)
+          result_resp = post_discussion(path, end_line, body, **diff_refs)
           if result_resp:
               success_count += 1
           else:
@@ -214,8 +230,13 @@ code-review:
               fallback_body += format_comment_fallback(comment) + "\n\n---\n\n"
           post_note(fallback_body)
 
-      # Post summary
-      summary = f"🔍 **OpenCodeReview** found **{len(comments)}** issue(s) in this MR."
+      # Post summary last
+      total_count = len(comments)
+      failed_count = len(failed_comments)
+      summary = f"🔍 **OpenCodeReview** found **{total_count}** issue(s) in this MR."
+      if total_count > 0:
+          summary += f"\n- ✅ {success_count} posted as inline comment(s)"
+          summary += f"\n- 📝 {failed_count} posted as summary (missing line info)"
       if warnings:
           summary += f"\n\n⚠️ {len(warnings)} warning(s) occurred during review."
       post_note(summary)

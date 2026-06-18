@@ -20,6 +20,7 @@ const (
 	MainTask              TaskType = "main_task"
 	MemoryCompressionTask TaskType = "memory_compression_task"
 	ReLocationTask        TaskType = "re_location_task"
+	ReviewFilterTask      TaskType = "review_filter_task"
 )
 
 const (
@@ -67,8 +68,9 @@ type TaskRecord struct {
 	fileSession     *FileSession // back-reference for JSONL persistence
 }
 
-// TokenUsage holds estimated token usage for a single LLM request/response cycle.
-// Calculated locally using tiktoken so it works with any model provider.
+// TokenUsage holds token usage for a single LLM request/response cycle.
+// Uses actual token counts from the API response when available,
+// falling back to local estimation via tiktoken.
 type TokenUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
@@ -219,8 +221,8 @@ func copyMessagesForJSON(msgs []llm.Message) any {
 }
 
 // SetResponse records the LLM response in the most recent TaskRecord of the given type.
-// It computes estimated token usage locally using tiktoken, independent of any API format,
-// and writes an llm_response record to the JSONL stream.
+// It uses actual token usage from the API response when available, falling back to
+// local estimation via tiktoken, and writes an llm_response record to the JSONL stream.
 func (tr *TaskRecord) SetResponse(resp *llm.ChatResponse, duration time.Duration) {
 	if resp == nil || len(resp.Choices) == 0 {
 		tr.SetError(fmt.Errorf("empty response"), duration)
@@ -232,16 +234,24 @@ func (tr *TaskRecord) SetResponse(resp *llm.ChatResponse, duration time.Duration
 		content = *choice.Message.Content
 	}
 
-	// Estimate tokens using tiktoken — works with any model provider.
-	var promptTokens int
-	for _, m := range tr.RequestMessages {
-		promptTokens += llm.CountTokens(m.ExtractText())
+	var promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens int
+	if resp.Usage != nil {
+		promptTokens = int(resp.Usage.PromptTokens)
+		completionTokens = int(resp.Usage.CompletionTokens)
+		cacheReadTokens = int(resp.Usage.CacheReadTokens)
+		cacheWriteTokens = int(resp.Usage.CacheWriteTokens)
+	} else {
+		for _, m := range tr.RequestMessages {
+			promptTokens += llm.CountTokens(m.ExtractText())
+		}
+		completionTokens = llm.CountTokens(content)
 	}
-	completionTokens := llm.CountTokens(content)
 
 	usage := &TokenUsage{
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
 	}
 
 	tr.Response = &ResponseRecord{
@@ -262,7 +272,7 @@ func (tr *TaskRecord) SetResponse(resp *llm.ChatResponse, duration time.Duration
 					"arguments": tc.Function.Arguments,
 				})
 			}
-			p.WriteLLMResponse(fs.FilePath, tr.Type, content, toolCallsJSON, resp.Model, promptTokens, completionTokens, duration)
+			p.WriteLLMResponse(fs.FilePath, tr.Type, content, toolCallsJSON, resp.Model, *usage, duration)
 		}
 	}
 }

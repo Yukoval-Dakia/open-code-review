@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -103,9 +104,11 @@ type reviewOptions struct {
 	outputFormat   string
 	audience       string // --audience: "human" (default) or "agent"
 	background     string // --background: optional requirement context
+	model          string // --model: override resolved LLM model for this review
 	concurrency    int
 	perFileTimeout int
 	maxTools       int
+	maxGitProcs    int
 	preview        bool
 	showHelp       bool
 }
@@ -126,7 +129,9 @@ func parseReviewFlags(args []string) (reviewOptions, error) {
 	a.IntVar(&opts.perFileTimeout, "timeout", 10, "concurrent task timeout in minutes")
 	a.StringVar(&opts.audience, "audience", "human", "output audience: human (show progress) or agent (summary only)")
 	a.StringVarP(&opts.background, "background", "b", "", "optional requirement/business context for the review")
-	a.IntVar(&opts.maxTools, "max-tools", 0, "max tool call rounds per file; only takes effect when greater than template default")
+	a.StringVar(&opts.model, "model", "", "override LLM model for this review (e.g., claude-opus-4-6)")
+	a.IntVar(&opts.maxTools, "max-tools", 0, "max tool call rounds per file (0 = template default; min 10)")
+	a.IntVar(&opts.maxGitProcs, "max-git-procs", 16, "max concurrent git subprocesses")
 	a.BoolVarP(&opts.preview, "preview", "p", false, "preview which files will be reviewed without running the LLM")
 
 	if err := a.Parse(args); err != nil {
@@ -152,6 +157,9 @@ func parseReviewFlags(args []string) (reviewOptions, error) {
 	if opts.from != "" && opts.to == "" {
 		return opts, fmt.Errorf("--to is required when --from is specified")
 	}
+	if opts.to != "" && opts.from == "" {
+		return opts, fmt.Errorf("--from is required when --to is specified")
+	}
 
 	switch opts.audience {
 	case "human", "agent":
@@ -159,8 +167,17 @@ func parseReviewFlags(args []string) (reviewOptions, error) {
 		return opts, fmt.Errorf("invalid --audience value %q: must be 'human' or 'agent'", opts.audience)
 	}
 
+	const minMaxTools = 10
 	if opts.maxTools < 0 {
 		return opts, fmt.Errorf("--max-tools must be a non-negative integer (0 means use template default)")
+	}
+	if opts.maxTools > 0 && opts.maxTools < minMaxTools {
+		fmt.Fprintf(os.Stderr, "[ocr] --max-tools %d is below minimum %d, using %d\n", opts.maxTools, minMaxTools, minMaxTools)
+		opts.maxTools = minMaxTools
+	}
+
+	if opts.maxGitProcs < 0 {
+		return opts, fmt.Errorf("--max-git-procs must be a non-negative integer (0 means use default 16)")
 	}
 
 	return opts, nil
@@ -201,8 +218,10 @@ Flags:
   -c, --commit string     single commit hash or tag to review (vs its parent)
   -f, --format string     output format: text or json (default "text")
   --concurrency int       max concurrent file reviews (default 8)
+  --max-git-procs int     max concurrent git subprocesses (default 16)
   --from string           source ref to start diff from (e.g., 'main')
-  --max-tools int         max tool call rounds per file; only takes effect when greater than template default
+  --max-tools int         max tool call rounds per file (0 = template default; min 10)
+  --model string          override LLM model for this review (e.g., claude-opus-4-6)
   -p, --preview           preview which files will be reviewed without running the LLM
   --repo string           root directory of the git repository (default: current dir)
   --rule string           path to JSON file with system review rules
@@ -236,7 +255,7 @@ func parseConfigArgs(args []string) (configAction, error) {
 			value:  args[2],
 		}, nil
 	default:
-		return configAction{}, fmt.Errorf("unknown config sub-command: %s\nAvailable: set", subCmd)
+		return configAction{}, fmt.Errorf("unknown config sub-command: %s\nAvailable: set, provider, model", subCmd)
 	}
 }
 
@@ -245,14 +264,38 @@ func printConfigUsage() {
 
 Usage:
   ocr config set <key> <value>
+  ocr config provider              Interactive provider setup
+  ocr config model                 Interactive model selection
 
 Examples:
+  # Provider setup (interactive)
+  ocr config provider
+  ocr config model
+
+  # Provider setup (non-interactive)
+  ocr config set provider anthropic
+  ocr config set model claude-opus-4-6
+  # Set API key via environment variable (recommended) or config:
+  # export ANTHROPIC_API_KEY=sk-ant-xxx
+  ocr config set providers.anthropic.api_key "$ANTHROPIC_API_KEY"
+
+  # Custom provider
+  ocr config set provider my-gateway
+  ocr config set custom_providers.my-gateway.url https://gateway.internal.com/v1
+  ocr config set custom_providers.my-gateway.protocol openai
+  ocr config set custom_providers.my-gateway.model llama-3-70b
+  ocr config set custom_providers.my-gateway.models '["llama-3-70b","llama-3-8b"]'
+  ocr config set custom_providers.my-gateway.api_key "$MY_API_KEY"
+
+  # Legacy endpoint configuration
   ocr config set llm.url https://xx/v1/openai/chat/completions
   ocr config set llm.auth_token xxxxxxxxxx
+  ocr config set llm.auth_header x-api-key
   ocr config set llm.model claude-opus-4-6
   ocr config set llm.extra_body '{"thinking":{"type":"disabled"}}'
   ocr config set language English
   ocr config set telemetry.enabled true
 
-Supported keys: llm.url, llm.auth_token, llm.model, llm.use_anthropic, llm.extra_body, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging`)
+Supported keys: provider, model, providers.<name>.<field>, custom_providers.<name>.<field>, llm.url, llm.auth_token, llm.auth_header, llm.model, llm.use_anthropic, llm.extra_body, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging
+Provider fields: api_key, url, protocol, model, models, auth_header, extra_body`)
 }

@@ -1,71 +1,71 @@
-#### 明确的错别字或拼写错误识别
-- 定义处的变量名、常量名、函数名中包含拼写错误，请不要报告调用处的拼写错误
-- 日志或异常信息中的字符串包含影响阅读理解的拼写错误
+#### Obvious Typos or Spelling Errors
+- Spelling errors in variable names, constant names, or function names at their declaration sites; do not report spelling errors at call sites
+- Strings in log messages or exception messages containing spelling errors that affect readability
 
-#### 死代码
-- 永远不会被执行到的代码块（如条件恒为 false 的分支、return 语句后的代码）
-- 声明后从未被读取或引用的变
-- 已注释掉的大段代码块（无明显保留意图的注释代码）
+#### Dead Code
+- Code blocks that can never be reached (e.g., branches where the condition is always false, code after a return statement)
+- Variables that are declared but never read or referenced
+- Large blocks of commented-out code (with no apparent intent to preserve)
 
-#### 智能指针使用
-**检查要点：**
-- 优先使用`std::unique_ptr`管理独占资源
-- 使用`std::shared_ptr`管理共享资源
-- 避免使用裸指针管理动态内存
-- 正确使用`std::weak_ptr`打破循环引用
+#### Smart Pointer Usage
+**Key checks:**
+- Prefer `std::unique_ptr` for managing exclusively owned resources
+- Use `std::shared_ptr` for managing shared resources
+- Avoid using raw pointers to manage dynamic memory
+- Use `std::weak_ptr` correctly to break circular references
 
-**示例：**
+**Example:**
 ```cpp
-// ❌ 避免使用裸指针
+// Bad: using raw pointers
 Widget* widget = new Widget();
-delete widget; // 容易忘记或异常时不执行
+delete widget; // easy to forget or skipped during exceptions
 
-// ✅ 使用智能指针
+// Good: using smart pointers
 auto widget = std::make_unique<Widget>();
-// 自动析构，异常安全
+// automatically destroyed, exception-safe
 ```
 
-#### RAII原则
-**检查要点：**
-- 资源在构造函数中获取
-- 资源在析构函数中释放
-- 使用栈对象管理资源
-- 避免手动资源管理
+#### RAII Principle
+**Key checks:**
+- Resources are acquired in constructors
+- Resources are released in destructors
+- Use stack objects to manage resources
+- Avoid manual resource management
 
-#### STL容器和算法
-**检查要点：**
-- 优先使用STL容器而非数组
-- 使用STL算法而非手写循环
-- 选择合适的容器类型
-- 了解容器的性能特征
+#### STL Containers and Algorithms
+**Key checks:**
+- Prefer STL containers over raw arrays
+- Use STL algorithms instead of hand-written loops
+- Choose the appropriate container type
+- Understand the performance characteristics of containers
 
-**示例：**
+**Example:**
 ```cpp
-// ❌ 手写循环
+// Bad: hand-written loop
 std::vector<int> vec = {1, 2, 3, 4, 5};
 for (int i = 0; i < vec.size(); ++i) {
     vec[i] *= 2;
 }
 
-// ✅ 使用算法
+// Good: using algorithms
 std::transform(vec.begin(), vec.end(), vec.begin(),
                [](int x) { return x * 2; });
 ```
 
-#### auto关键字
-**检查要点：**
-- 类型复杂时使用auto
-- 避免在简单类型上滥用auto
-- 使用auto&和const auto&避免拷贝
+#### The auto Keyword
+**Key checks:**
+- Use auto when the type is complex
+- Avoid overusing auto for simple types
+- Use auto& and const auto& to avoid unnecessary copies
 
-#### 异常处理完整性
-**检查要点：**
-- 捕获具体异常类型而非...
-- 异常处理不要忽略错误
+#### Exception Handling Completeness
+**Key checks:**
+- Catch specific exception types rather than using ...
+- Do not silently ignore errors in exception handlers
 
-#### const正确性
-**检查要点：**
-- 成员函数const修饰
-- 参数const引用传递
-- 指针和引用的const位置
-- const成员变量合理使用
+#### const Correctness
+**Key checks:**
+- Apply const to member functions where appropriate
+- Pass parameters by const reference
+- Correct placement of const for pointers and references
+- Use const member variables judiciously

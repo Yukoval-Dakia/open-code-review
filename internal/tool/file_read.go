@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -16,7 +17,7 @@ func NewFileRead(fr *FileReader) *FileReadProvider { return &FileReadProvider{Fi
 
 func (p *FileReadProvider) Tool() Tool { return FileRead }
 
-func (p *FileReadProvider) Execute(args map[string]any) (string, error) {
+func (p *FileReadProvider) Execute(ctx context.Context, args map[string]any) (string, error) {
 	filePath, _ := args["file_path"].(string)
 	if filePath == "" {
 		return "Error: file_path is required", nil
@@ -28,43 +29,44 @@ func (p *FileReadProvider) Execute(args map[string]any) (string, error) {
 		startLine = 1
 	}
 	if !hasEnd || endLine <= 0 {
-		endLine = 0 // means "to end of file"
+		endLine = 0
 	}
 
-	content, err := p.FileReader.Read(filePath)
+	maxLines := fileReadMaxLines
+	if endLine > 0 {
+		requested := int(endLine) - int(startLine) + 1
+		if requested <= 0 {
+			return "", fmt.Errorf("invalid line range: start_line %d is greater than end_line %d", int(startLine), int(endLine))
+		}
+		if requested < maxLines {
+			maxLines = requested
+		}
+	}
+
+	lines, totalLines, err := p.FileReader.ReadLines(ctx, filePath, int(startLine), maxLines)
 	if err != nil {
 		return "", fmt.Errorf("file %q not found: %w", filePath, err)
 	}
 
-	lines := strings.Split(content, "\n")
-	totalLines := len(lines)
-
-	// Adjust endLine: if not specified or beyond file length, clamp to file length.
-	actualEnd := int(endLine)
-	if actualEnd <= 0 || actualEnd > totalLines {
-		actualEnd = totalLines
-	}
-
-	start := int(startLine) - 1
-	if start >= totalLines {
+	if totalLines > 0 && int(startLine)-1 >= totalLines {
 		return "", fmt.Errorf("file %q has only %d lines, requested range %d-%d", filePath, totalLines, int(startLine), int(endLine))
 	}
 
-	// Apply 500-line cap and track truncation.
-	truncated := false
-	requestedCount := actualEnd - start
-	if requestedCount > fileReadMaxLines {
-		actualEnd = start + fileReadMaxLines
-		truncated = true
+	effectiveEnd := totalLines
+	if endLine > 0 && int(endLine) < effectiveEnd {
+		effectiveEnd = int(endLine)
 	}
+	fullRange := effectiveEnd - (int(startLine) - 1)
+	truncated := fullRange > fileReadMaxLines
+
+	displayEnd := int(startLine) - 1 + len(lines)
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("File: %s (Total lines: %d)\n", filePath, totalLines))
 	sb.WriteString(fmt.Sprintf("IS_TRUNCATED: %t\n", truncated))
-	sb.WriteString(fmt.Sprintf("LINE_RANGE: %d-%d\n", int(startLine), actualEnd))
-	// The following is the original content of the file.
-	for i := start; i < actualEnd; i++ {
-		sb.WriteString(fmt.Sprintf("%d|%s\n", i+1, lines[i]))
+	sb.WriteString(fmt.Sprintf("LINE_RANGE: %d-%d\n", int(startLine), displayEnd))
+	for i, line := range lines {
+		sb.WriteString(fmt.Sprintf("%d|%s\n", int(startLine)+i, line))
 	}
 	if truncated {
 		sb.WriteString(fmt.Sprintf("\nNote: Results truncated to %d lines. Please narrow your line range.\n", fileReadMaxLines))

@@ -2,12 +2,14 @@ package diff
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/open-code-review/open-code-review/internal/gitcmd"
 	"github.com/open-code-review/open-code-review/internal/model"
 )
 
@@ -43,6 +45,7 @@ const (
 type Provider struct {
 	repoDir string
 	mode    Mode
+	runner  *gitcmd.Runner
 
 	// Range mode parameters
 	from, to string // from/to refs for range comparison
@@ -54,29 +57,32 @@ type Provider struct {
 }
 
 // NewProvider creates a Provider for range mode: from..to (via merge-base).
-func NewProvider(repoDir, from, to string) *Provider {
+func NewProvider(repoDir, from, to string, runner *gitcmd.Runner) *Provider {
 	return &Provider{
 		repoDir: repoDir,
 		mode:    ModeRange,
 		from:    from,
 		to:      to,
+		runner:  runner,
 	}
 }
 
 // NewCommitProvider creates a Provider for commit mode: show changes introduced by a single commit.
-func NewCommitProvider(repoDir, commit string) *Provider {
+func NewCommitProvider(repoDir, commit string, runner *gitcmd.Runner) *Provider {
 	return &Provider{
 		repoDir: repoDir,
 		mode:    ModeCommit,
 		commit:  commit,
+		runner:  runner,
 	}
 }
 
 // NewWorkspaceProvider creates a Provider for workspace mode (current uncommitted changes).
-func NewWorkspaceProvider(repoDir string) *Provider {
+func NewWorkspaceProvider(repoDir string, runner *gitcmd.Runner) *Provider {
 	return &Provider{
 		repoDir: repoDir,
 		mode:    ModeWorkspace,
+		runner:  runner,
 	}
 }
 
@@ -91,45 +97,45 @@ func (p *Provider) IsCommitMode() bool {
 }
 
 // MergeBase returns the computed merge-base commit hash for range mode.
-func (p *Provider) MergeBase() string {
+func (p *Provider) MergeBase(ctx context.Context) string {
 	if p.mode != ModeRange || p.mergeBase != "" {
 		return p.mergeBase
 	}
-	p.mergeBase = p.computeMergeBase(p.from, p.to)
+	p.mergeBase = p.computeMergeBase(ctx, p.from, p.to)
 	return p.mergeBase
 }
 
 // GetDiff returns all changes as parsed model.Diff structs.
-func (p *Provider) GetDiff() ([]model.Diff, error) {
+func (p *Provider) GetDiff(ctx context.Context) ([]model.Diff, error) {
 	var combined strings.Builder
 
 	switch p.mode {
 	case ModeRange:
-		base := p.MergeBase()
+		base := p.MergeBase(ctx)
 		if base == "" {
 			return nil, fmt.Errorf("cannot find merge-base between %s and %s", p.from, p.to)
 		}
-		out, err := p.runGit("diff", "--no-color", "-U"+fmt.Sprint(DiffContextLines), base, p.to, "--")
+		out, err := p.runGit(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--end-of-options", base, p.to, "--")
 		if err != nil {
 			return nil, fmt.Errorf("git diff failed: %w", err)
 		}
 		combined.WriteString(out)
 
 	case ModeCommit:
-		out, err := p.runGit("show", "--no-color", "-U"+fmt.Sprint(DiffContextLines), p.commit)
+		out, err := p.runGit(ctx, "show", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--end-of-options", p.commit)
 		if err != nil {
 			return nil, fmt.Errorf("git show failed: %w", err)
 		}
 		combined.WriteString(out)
 
 	case ModeWorkspace:
-		tracked, err := p.workspaceTrackedDiff()
+		tracked, err := p.workspaceTrackedDiff(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("workspace tracked diff failed: %w", err)
 		}
 		combined.WriteString(tracked)
 
-		untracked, err := p.untrackedFileDiffs()
+		untracked, err := p.untrackedFileDiffs(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("untracked file diff failed: %w", err)
 		}
@@ -147,7 +153,7 @@ func (p *Provider) GetDiff() ([]model.Diff, error) {
 		ref = p.commit
 	}
 
-	diffs, err := ParseDiffText(combined.String(), p.repoDir, ref)
+	diffs, err := ParseDiffText(ctx, combined.String(), p.repoDir, ref, p.runner)
 	if err != nil {
 		return nil, err
 	}
@@ -250,36 +256,34 @@ func (p *Provider) filterDiffs(diffs []model.Diff) []model.Diff {
 
 // ---- Internal helpers ----
 
-func (p *Provider) computeMergeBase(from, to string) string {
-	out, err := p.runGit("merge-base", from, to)
+func (p *Provider) computeMergeBase(ctx context.Context, from, to string) string {
+	out, err := p.runGit(ctx, "merge-base", "--end-of-options", from, to)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(out)
 }
 
-func (p *Provider) workspaceTrackedDiff() (string, error) {
-	out, err := p.runGit("diff", "HEAD", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--")
+func (p *Provider) workspaceTrackedDiff(ctx context.Context) (string, error) {
+	out, err := p.runGit(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--")
 	if err == nil && out != "" {
 		return out, nil
 	}
-	return p.runGit("diff", "--staged", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--")
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	return p.runGit(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--staged", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--")
 }
 
-func (p *Provider) untrackedFileDiffs() ([]string, error) {
-	files, err := p.untrackedFilesList()
+func (p *Provider) untrackedFileDiffs(ctx context.Context) ([]string, error) {
+	files, err := p.untrackedFilesList(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	var results []string
 	for _, f := range files {
-		fullPath := filepath.Join(p.repoDir, f)
-		stat, serr := os.Stat(fullPath)
-		if serr != nil || stat.IsDir() {
-			continue
-		}
-		content, rerr := os.ReadFile(fullPath)
+		content, rerr := readWorkspaceFileForDiff(p.repoDir, f)
 		if rerr != nil {
 			continue
 		}
@@ -309,8 +313,8 @@ func (p *Provider) untrackedFileDiffs() ([]string, error) {
 	return results, nil
 }
 
-func (p *Provider) untrackedFilesList() ([]string, error) {
-	out, err := p.runGit("ls-files", "--others", "--exclude-standard")
+func (p *Provider) untrackedFilesList(ctx context.Context) ([]string, error) {
+	out, err := p.runGit(ctx, "ls-files", "--others", "--exclude-standard")
 	if err != nil || out == "" {
 		return nil, nil
 	}
@@ -328,13 +332,12 @@ func (p *Provider) untrackedFilesList() ([]string, error) {
 	return files, nil
 }
 
-func (p *Provider) runGit(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+func (p *Provider) runGit(ctx context.Context, args ...string) (string, error) {
+	if p.runner != nil {
+		return p.runner.Run(ctx, p.repoDir, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = p.repoDir
 	out, err := cmd.CombinedOutput()
-	outStr := string(out)
-	if err != nil {
-		return outStr, err
-	}
-	return outStr, nil
+	return string(out), err
 }

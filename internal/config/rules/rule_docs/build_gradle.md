@@ -1,1 +1,1 @@
-避免引入snapshot版本的依赖发布线上环境，建议引入具体的版本号。注意：版本号并非新增的代码行时请忽略。
+Avoid introducing snapshot version dependencies in production environments; use specific version numbers instead. Note: ignore this rule when the version number is not on a newly added line of code.

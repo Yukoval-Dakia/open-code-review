@@ -3,6 +3,7 @@ package main
 // go build ./cmd/testdiff/ -o /tmp/testdiff && /tmp/testdiff ...
 // Or just: go run ./cmd/testdiff/ ...
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,7 +29,7 @@ func main() {
 	}
 
 	provider := buildProvider(repoDir, args)
-	diffs, err := provider.GetDiff()
+	diffs, err := provider.GetDiff(context.Background())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -141,11 +142,11 @@ func resolveRepo(input string) (string, error) {
 func buildProvider(repoDir string, args cliArgs) *diff.Provider {
 	switch {
 	case args.commit != "":
-		return diff.NewCommitProvider(repoDir, args.commit)
+		return diff.NewCommitProvider(repoDir, args.commit, nil)
 	case args.from != "" && args.to != "":
-		return diff.NewProvider(repoDir, args.from, args.to)
+		return diff.NewProvider(repoDir, args.from, args.to, nil)
 	default:
-		return diff.NewWorkspaceProvider(repoDir)
+		return diff.NewWorkspaceProvider(repoDir, nil)
 	}
 }
 

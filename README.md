@@ -7,10 +7,11 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@alibaba-group/open-code-review"><img alt="npm" src="https://img.shields.io/npm/v/@alibaba-group/open-code-review?style=flat-square" /></a>
   <a href="https://github.com/alibaba/open-code-review/actions/workflows/release.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/alibaba/open-code-review/release.yml?style=flat-square" /></a>
+  <a href="https://goreportcard.com/report/github.com/alibaba/open-code-review"><img alt="Go Report Card" src="https://goreportcard.com/badge/github.com/alibaba/open-code-review?style=flat-square" /></a>
   <a href="https://github.com/alibaba/open-code-review/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/alibaba/open-code-review?style=flat-square" /></a>
 </p>
 <p align="center">
-  English | <a href="README.zh-CN.md">简体中文</a>
+  English | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja-JP.md">日本語</a> | <a href="README.ko-KR.md">한국어</a> | <a href="README.ru-RU.md">Русский</a>
 </p>
 
 ---
@@ -112,21 +113,42 @@ sudo cp dist/opencodereview /usr/local/bin/ocr
 
 **You must configure an LLM before reviewing code.**
 
+**Option A: Interactive setup (Recommended)**
+
 ```bash
-# Option A: Interactive config
+ocr config provider          # Select a built-in provider or add a custom one
+ocr config model             # Pick a model for the active provider
+```
+
+![Provider setup](imgs/providers.jpg)
+
+**Option B: Manual config**
+
+```bash
 ocr config set llm.url https://api.anthropic.com/v1/messages
 ocr config set llm.auth_token your-api-key-here
 ocr config set llm.model claude-opus-4-6
 ocr config set llm.use_anthropic true
+```
 
-# Option B: Environment variables (highest priority)
+Config is stored in `~/.opencodereview/config.json`.
+
+**`auth_header` (optional):** Controls which HTTP header carries the API key when using Anthropic. Defaults to `authorization` (Bearer token) if omitted. If you use a standard `sk-ant-*` API key, you must set it to `x-api-key`:
+
+```bash
+ocr config set llm.auth_header x-api-key
+```
+
+Supported values: `x-api-key`, `authorization` (alias: `bearer`). Other values are rejected with an error.
+
+**Option C: Environment variables (highest priority)**
+
+```bash
 export OCR_LLM_URL=https://api.anthropic.com/v1/messages
 export OCR_LLM_TOKEN=your-api-key-here
 export OCR_LLM_MODEL=claude-opus-4-6
 export OCR_USE_ANTHROPIC=true
 ```
-
-Config is stored in `~/.opencodereview/config.json`.
 
 It is also compatible with Claude Code environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`) and parses `~/.zshrc` / `~/.bashrc` for those exports.
 
@@ -183,6 +205,12 @@ ocr review
 ```
 
 This mode does not read or convert browser session tokens and does not require an Anthropic API key. It uses official Claude Code CLI authentication and model configuration, but disables Claude Code native tools, skills, MCP, and project-level settings so they do not interfere with OCR's own tool protocol. The default runtime is `exec`, which invokes `claude -p` per turn. Set `llm.claude_runtime` or `OCR_CLAUDE_RUNTIME` to `app_server` to use Claude Code's official `stream-json` input/output format for each non-interactive request, closing stdin after the JSONL user message so the CLI emits its final result. During `ocr review`, both runtimes emit the same OCR tool calls (`file_read`, `code_search`, `file_read_diff`, `code_comment`, and `task_done`) that API providers use, so they run through the native review loop.
+> **Note for CC-Switch Users**: If you are using [CC-Switch](https://github.com/farion1231/cc-switch) with [routing service](https://www.ccswitch.io/en/docs?section=proxy&item=service) enabled, you can point `llm.url` to the CC-Switch proxy address without additional configuration:
+> - For **Claude** provider: set `llm.url` to `http://127.0.0.1:15721`
+> - For **Codex** provider: set `llm.url` to `http://127.0.0.1:15721/v1`
+> - Set `llm.model` according to your provider settings
+> - `llm.auth_token` can be any value
+> - `extra_body` settings still apply
 
 **2. Test Connectivity**
 
@@ -230,7 +258,43 @@ For [Claude Code](https://docs.anthropic.com/en/docs/claude-code), install the c
 
 This registers the `/open-code-review:review` slash command, which runs OCR and automatically filters and fixes issues.
 
-#### Option 3: Copy the Command File Directly
+#### Option 3: Install as a Codex Plugin
+
+For local Codex, install the Open Code Review plugin from this repository:
+
+```bash
+codex plugin marketplace add alibaba/open-code-review
+codex
+/plugins
+```
+
+For a local checkout or fork:
+
+```bash
+codex plugin marketplace add .
+codex
+/plugins
+```
+
+Install and enable `Open Code Review`, then start a new Codex thread and invoke it explicitly:
+
+```text
+@Open Code Review review my current changes
+@Open Code Review review this branch against main
+@Open Code Review review and fix high-confidence issues
+```
+
+This registers a Codex skill that runs the local OCR CLI:
+
+```bash
+ocr review --audience agent
+```
+
+This integration does not change OCR's internal LLM backend and does not require configuring an OpenAI Responses API endpoint for Codex. OCR itself still requires the `ocr` CLI to be installed and configured as described in the CLI setup section.
+
+Korean guide: [`plugins/open-code-review/CODEX.ko-KR.md`](plugins/open-code-review/CODEX.ko-KR.md)
+
+#### Option 4: Copy the Command File Directly
 
 For a quick setup without any package manager, simply copy the command file to use the `/open-code-review` slash command in Claude Code.
 
@@ -261,9 +325,11 @@ The core command for CI integration:
 ```bash
 ocr review \
   --from "origin/main" \
-  --to "origin/feature-branch" \
+  --to "<commit_sha>" \
   --format json
 ```
+
+The `--from` flag accepts a branch ref (e.g., `origin/main`) or commit SHA as the base, while `--to` accepts a commit SHA or branch ref as the head. In CI environments, using commit SHA for `--to` is recommended to correctly handle fork PRs/MRs where the source branch doesn't exist on the origin remote.
 
 The `--format json` flag outputs machine-readable results suitable for parsing in CI scripts.
 
@@ -278,8 +344,11 @@ See the [`examples/`](./examples/) directory for integration examples:
 |---------|-------|-------------|
 | `ocr review` | `ocr r` | Start a code review |
 | `ocr rules check <file>` | — | Preview which review rule applies to a file path |
+| `ocr config provider` | — | Interactive provider setup (built-in, custom, or manual) |
+| `ocr config model` | — | Interactive model selection for the active provider |
 | `ocr config set <key> <value>` | — | Set configuration values |
 | `ocr llm test` | — | Test LLM connectivity |
+| `ocr llm providers` | — | List built-in LLM providers |
 | `ocr viewer` | `ocr v` | Launch WebUI session viewer on `localhost:5483` |
 | `ocr version` | — | Show version info |
 
@@ -296,13 +365,21 @@ See the [`examples/`](./examples/) directory for integration examples:
 | `--concurrency` | — | `8` | Max concurrent file reviews |
 | `--timeout` | — | `10` | Concurrent task timeout in minutes |
 | `--audience` | — | `human` | `human` (show progress) or `agent` (summary only) |
+| `--background` | `-b` | — | Optional requirement/business context for the review; auto-filled from commit message when using `--commit` |
+| `--model` | — | — | Select or override the LLM model for this review |
 | `--rule` | — | — | Path to custom JSON review rules |
 | `--max-tools` | — | built-in | Max tool call rounds per file; only takes effect when greater than template default |
+| `--max-git-procs` | — | built-in | Max concurrent git subprocesses |
 | `--tools` | — | — | Path to custom JSON tools config |
 
 ## Examples
 
 ```bash
+# Interactive provider and model setup
+ocr config provider
+ocr config model
+ocr llm providers
+
 # Preview which files will be reviewed (no LLM calls)
 ocr review --preview
 ocr review -c abc123 -p
@@ -315,6 +392,13 @@ ocr review --from main --to my-feature --concurrency 4
 
 # Review a specific commit with verbose JSON output
 ocr review --commit abc123 --format json --audience agent
+
+# Select or override model for this review
+ocr review --model claude-opus-4-6
+ocr review --commit abc123 --model claude-sonnet-4-6
+
+# Provide requirement context for more targeted review
+ocr review --background "Adding rate limiting to the login API"
 
 # Use custom review rules
 ocr review --rule /path/to/my-rules.json
@@ -372,20 +456,71 @@ Layers 1–3 share the same JSON format:
 - Within each layer, rules are evaluated in declaration order — the first match wins.
 - If a rule file does not exist, it is silently skipped.
 
+### Path Filtering
+
+Rule files also support `include` and `exclude` fields to control which files enter the review scope:
+
+```json
+{
+  "rules": [
+    {"path": "**/*.java", "rule": "Check for null safety"}
+  ],
+  "include": ["src/main/**/*.java", "lib/**/*.kt"],
+  "exclude": ["**/generated/**", "vendor/**"]
+}
+```
+
+**Filter decision priority (highest to lowest):**
+
+| Step | Condition | Result |
+|------|-----------|--------|
+| 1 | File is binary | Excluded |
+| 2 | Path matches user `exclude` pattern | Excluded |
+| 3 | File extension not in supported list | Excluded |
+| 4 | `include` is configured and path matches | **Reviewed** (skips step 5) |
+| 5 | Path matches built-in default exclude pattern (test files, etc.) | Excluded |
+| 6 | None of the above | Reviewed |
+
+**How it works:**
+
+- `include` and `exclude` follow the same priority chain as review rules (`--rule` > project config > global config). The **highest-priority layer that has include/exclude configured** takes effect as a whole — patterns are not merged across layers.
+- `exclude` always wins over `include` — a file matching both is excluded.
+- `include` acts as a **bypass for built-in default exclude patterns** (e.g., test files), not as an exclusive allowlist — files not matching any `include` pattern still proceed through the default filter checks normally.
+- Pattern syntax: supports `**` recursive matching, `*` single-segment matching, and `{a,b}` brace expansion. Matching is case-insensitive.
+
+**Built-in default exclude patterns** (filters test files, etc. — can be overridden with `include`):
+
+```
+**/*_test.go, **/*Test.java, **/*Tests.java, **/*_test.rs,
+**/*.test.{js,jsx,ts,tsx}, **/*.spec.{js,jsx,ts,tsx}, **/__tests__/**,
+**/src/test/java/**/*.java, **/src/test/**/*.kt,
+**/test/**/*_test.py, **/tests/**/*_test.py, **/*_test.py,
+**/*_spec.rb, **/spec/**/*_spec.rb, **/oh_modules/**
+```
+
 ## Configuration Reference
 
 Config file: `~/.opencodereview/config.json`
 
 | Key | Type | Example |
 |-----|------|---------|
+| `provider` | string | `anthropic` \| `openai` \| `dashscope` \| `deepseek` \| `z-ai` |
+| `providers.<name>.api_key` | string | Provider-specific API key |
+| `providers.<name>.url` | string | Provider base URL override |
+| `providers.<name>.protocol` | string | `anthropic` \| `openai` |
+| `providers.<name>.model` | string | Model name for the provider |
+| `providers.<name>.models` | array | Optional provider model list for interactive selection |
+| `providers.<name>.auth_header` | string | `x-api-key` \| `authorization` |
+| `custom_providers.<name>.*` | — | Same fields as `providers.<name>.*`, including optional `models` |
 | `llm.url` | string | `https://api.openai.com/v1/chat/completions` |
 | `llm.auth_token` | string | `sk-xxxxxxx` |
+| `llm.auth_header` | string | Anthropic only: `x-api-key` \| `authorization` |
 | `llm.model` | string | `claude-opus-4-6` |
 | `llm.protocol` | string | `anthropic` \| `openai` \| `codex` \| `claude` |
 | `llm.codex_runtime` | string | `exec` \| `app_server` |
 | `llm.claude_runtime` | string | `exec` \| `app_server` |
 | `llm.use_anthropic` | boolean | `true` \| `false` |
-| `language` | string | `English` \| `Chinese` (default: Chinese) |
+| `language` | string | Any language name, e.g. `English`, `Chinese` (default: `English`) |
 | `telemetry.enabled` | boolean | `true` \| `false` |
 | `telemetry.exporter` | string | `console` \| `otlp` |
 | `telemetry.otlp_endpoint` | string | OTLP collector address |
@@ -399,6 +534,7 @@ Environment variables take precedence over the config file.
 |----------|---------|
 | `OCR_LLM_URL` | LLM API endpoint URL |
 | `OCR_LLM_TOKEN` | API key / auth token |
+| `OCR_LLM_AUTH_HEADER` | Anthropic auth header (`x-api-key` or `authorization`) |
 | `OCR_LLM_MODEL` | Model name |
 | `OCR_USE_ANTHROPIC` | `true` = Anthropic, `false` = OpenAI |
 

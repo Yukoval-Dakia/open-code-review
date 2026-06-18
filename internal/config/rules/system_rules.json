@@ -6,12 +6,14 @@
     "**/pom.xml": "pom_xml.md",
     "**/build.gradle": "build_gradle.md",
     "**/package.json": "package_json.md",
+    "**/Cargo.toml": "cargo_toml.md",
     "**/*.{json,json5}": "json.md",
     "**/*.{yaml,yml}": "yaml.md",
     "**/*.java": "java.md",
     "**/*.ets": "arkts.md",
     "**/*.{ts,js,tsx,jsx}": "ts_js_tsx_jsx.md",
     "**/*.{kt}": "kotlin.md",
+    "**/*.rs": "rust.md",
     "**/*.{cpp,cc,hpp}": "cpp.md",
     "**/*.c": "c.md"
   }

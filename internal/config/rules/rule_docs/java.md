@@ -1,41 +1,41 @@
-#### 明确的错别字或拼写错误
-- 定义处的变量名、方法名、类名中的拼写错误（通过`code.search`搜索同类命名规范确认）
-- 日志或异常信息中的字符串包含影响阅读理解的拼写错误
-- 请不要报告引用处的拼写错误，因为这些通常是由定义决定的
+#### Obvious Typos or Spelling Errors
+- Spelling errors in variable names, method names, or class names at their declaration sites (confirm by searching for naming conventions of similar identifiers using `code_search`)
+- Strings in log messages or exception messages containing spelling errors that affect readability
+- Do not report spelling errors at reference sites, as these are typically determined by the declaration
 
-#### 死代码
-- 永远不会被执行到的代码块（如条件恒为 false 的分支、return 语句后的代码）
-- 声明后从未被读取或引用的变
-- 已注释掉的大段代码块（无明显保留意图的注释代码）
+#### Dead Code
+- Code blocks that can never be reached (e.g., branches where the condition is always false, code after a return statement)
+- Variables that are declared but never read or referenced
+- Large blocks of commented-out code (with no apparent intent to preserve)
 
-#### 逻辑错误识别
-- if 条件逻辑错误（使用`file.read`查看上下文确认预期逻辑）
-- 边界条件处理错误（特别关注索引、数组长度判断等）
-- 布尔逻辑运算符误用（优先级、短路评估问题）
-- 明显的死循环或递归中无终止条件
-- 在不应该退出的地方使用 return/break/continue
-- switch case 缺少 break 语句导致的意外穿透
-- 有意的穿透但缺少注释说明
-- 可能导致NPE的代码模式（通过`file.read`和`code.search`检查数据来源调用链确认风险）
-- 逻辑表达式缺少括号导致执行顺序可能与预期不一致
+#### Logic Error Detection
+- Incorrect if-condition logic (use `file_read` to examine surrounding context and confirm expected logic)
+- Boundary condition handling errors (pay special attention to index and array length checks)
+- Misuse of boolean logic operators (precedence and short-circuit evaluation issues)
+- Obvious infinite loops or recursion without termination conditions
+- Use of return/break/continue where exiting is not intended
+- Missing break statements in switch cases causing unintended fall-through
+- Intentional fall-through lacking explanatory comments
+- Code patterns that may cause NPE (confirm risk by inspecting the data source call chain using `file_read` and `code_search`)
+- Missing parentheses in logical expressions that may cause execution order to differ from intent
 
-#### 严重性能隐患
-- 在循环内部执行数据库查询（通过`code.search`确认方法调用是否涉及数据库操作）
-- N+1查询问题（应建议批量查询优化）
-- 未分页的大数据集处理（可通过`file.read`了解数据规模和处理上下文）
-- 嵌套循环中的低效算法实现（O(n²)及以上复杂度但有更优解法）
+#### Severe Performance Issues
+- Database queries executed inside loops (use `code_search` to confirm whether the method call involves database operations)
+- N+1 query problems (suggest batch query optimizations)
+- Processing large datasets without pagination (use `file_read` to understand data scale and processing context)
+- Inefficient algorithm implementations in nested loops (O(n^2) or higher complexity where a more optimal solution exists)
 
-#### 线程安全问题识别
-仅在以下情况下才指出线程安全问题：
-- **竞态条件**：存在"检查-然后-执行"模式，中间状态可能被其他线程改变
-- **复合操作原子性缺失**：多步操作需要保证原子性但未使用同步机制
-- **不安全的懒加载**：单例模式或缓存实现中的双重检查锁定缺陷
-- **线程不安全集合的并发写操作**：多线程环境下对ArrayList、HashMap等非线程安全集合的修改
+#### Thread Safety Issue Detection
+Only flag thread safety issues in the following cases:
+- **Race conditions**: A "check-then-act" pattern exists where intermediate state may be altered by another thread
+- **Non-atomic compound operations**: Multi-step operations that require atomicity but lack synchronization mechanisms
+- **Unsafe lazy initialization**: Double-checked locking defects in singleton patterns or cache implementations
+- **Concurrent writes to thread-unsafe collections**: Modifications to non-thread-safe collections such as ArrayList or HashMap in a multi-threaded environment
 
-以下情况下不应报告：
-- **方法内部的局部变量**：这些天然线程安全，每个线程都有独立副本
-- **单线程上下文的使用**：未发现明显的多线程调用（可通过`code.search`搜索相关调用上下文确认）
-- **只读操作**：即使使用非线程安全的数据结构，如果只进行读取操作
-- **不可变对象**：final字段且指向不可变对象的引用
-- **已有适当同步机制**：代码已使用synchronized、Lock、原子类等正确同步
-- **设计为单线程使用的组件**：如Builder模式的构建过程、临时数据传输对象等
+Do not report in the following cases:
+- **Local variables within methods**: These are inherently thread-safe, as each thread has its own copy
+- **Single-threaded context usage**: No evidence of multi-threaded invocation (confirm by searching for relevant call contexts using `code_search`)
+- **Read-only operations**: Even with non-thread-safe data structures, if only read operations are performed
+- **Immutable objects**: References to final fields pointing to immutable objects
+- **Proper synchronization already in place**: Code already uses synchronized, Lock, atomic classes, or other correct synchronization mechanisms
+- **Components designed for single-threaded use**: Such as the building phase of a Builder pattern, temporary data transfer objects, etc.

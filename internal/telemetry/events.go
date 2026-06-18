@@ -66,11 +66,15 @@ func FormatDuration(dur time.Duration) string {
 }
 
 // PrintTraceSummary prints a one-line summary of the review to stdout.
-func PrintTraceSummary(filesReviewed, commentsGenerated int64, inputTokens, outputTokens, totalTokens int64, duration time.Duration) {
+func PrintTraceSummary(filesReviewed, commentsGenerated int64, inputTokens, outputTokens, totalTokens int64, cacheReadTokens, cacheWriteTokens int64, duration time.Duration) {
 	elapsed := duration.Round(time.Second).String()
 	if inputTokens > 0 || outputTokens > 0 {
-		fmt.Fprintf(stdout.Writer(), "[ocr] Summary: %d file(s) reviewed, %d comment(s), ~%d token(s) used (input: ~%d, output: ~%d), %s elapsed\n",
-			filesReviewed, commentsGenerated, totalTokens, inputTokens, outputTokens, elapsed)
+		base := fmt.Sprintf("[ocr] Summary: %d file(s) reviewed, %d comment(s), ~%d token(s) used (input: ~%d, output: ~%d)",
+			filesReviewed, commentsGenerated, totalTokens, inputTokens, outputTokens)
+		if cacheReadTokens > 0 || cacheWriteTokens > 0 {
+			base += fmt.Sprintf(", cache(read: ~%d, write: ~%d)", cacheReadTokens, cacheWriteTokens)
+		}
+		fmt.Fprintf(stdout.Writer(), "%s, %s elapsed\n", base, elapsed)
 	} else {
 		fmt.Fprintf(stdout.Writer(), "[ocr] Summary: %d file(s) reviewed, %d comment(s), ~%d token(s) used, %s elapsed\n",
 			filesReviewed, commentsGenerated, totalTokens, elapsed)

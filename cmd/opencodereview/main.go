@@ -79,8 +79,11 @@ Commands:
 Examples:
   ocr review --from master --to dev        Review diff range
   ocr review --commit abc123               Review a single commit
+  ocr config provider                      Interactive provider setup
+  ocr config model                         Interactive model selection
   ocr config set llm.model opus-4-6        Set a config value
   ocr llm test                             Test LLM connectivity
+  ocr llm providers                        List built-in providers
   ocr version                              Show version info
 
 Use "ocr review -h" for more information about review.

@@ -1,10 +1,10 @@
-#### 明确的错别字或拼写错误识别
-- 键名中的拼写错误，特别是常用配置项的标准拼写
+#### Obvious Typos or Spelling Errors
+- Spelling errors in key names, especially the standard spelling of common configuration items
 
-#### 配置错误识别
-- 当前文件中存在可见范围内重复的键定义导致配置覆盖问题
-- 键值对格式错误（缺少等号、多余空格等）
-- 特殊字符未正确转义（如路径中的反斜杠、Unicode字符等）
+#### Configuration Error Detection
+- Duplicate key definitions within the visible scope of the current file causing configuration override issues
+- Malformed key-value pairs (missing equals sign, extra whitespace, etc.)
+- Special characters not properly escaped (e.g., backslashes in paths, Unicode characters, etc.)
 
-#### 严重的安全问题
-- 敏感信息（密码、API密钥、数据库连接串等）以明文形式存储
+#### Critical Security Issues
+- Sensitive information (passwords, API keys, database connection strings, etc.) stored in plaintext

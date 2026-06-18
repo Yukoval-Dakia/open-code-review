@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 
 	allowedext "github.com/open-code-review/open-code-review/internal/config/allowlist"
@@ -53,13 +54,13 @@ func (a *Agent) whyExcluded(d model.Diff) ExcludeReason {
 		return ExcludeUserRule
 	}
 
+	if f != nil && f.HasInclude() && f.IsUserIncluded(path) {
+		return ExcludeNone
+	}
+
 	ext := a.extFromPath(path)
 	if ext != "" && !allowedext.IsAllowedExt(ext) {
 		return ExcludeExtension
-	}
-
-	if f != nil && f.HasInclude() && f.IsUserIncluded(path) {
-		return ExcludeNone
 	}
 
 	if allowedext.IsExcludedPath(path) {
@@ -71,8 +72,8 @@ func (a *Agent) whyExcluded(d model.Diff) ExcludeReason {
 
 // Preview loads diffs and applies the filter algorithm, returning structured
 // preview data without dispatching any LLM calls.
-func (a *Agent) Preview() (*DiffPreview, error) {
-	if err := a.loadDiffs(); err != nil {
+func (a *Agent) Preview(ctx context.Context) (*DiffPreview, error) {
+	if err := a.loadDiffs(ctx); err != nil {
 		return nil, fmt.Errorf("load diffs: %w", err)
 	}
 
@@ -126,6 +127,8 @@ func diffStatus(d model.Diff) string {
 		return "added"
 	case d.IsDeleted:
 		return "deleted"
+	case d.IsRenamed:
+		return "renamed"
 	case d.OldPath != d.NewPath && d.OldPath != "" && d.OldPath != "/dev/null":
 		return "renamed"
 	default:

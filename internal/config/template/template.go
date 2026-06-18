@@ -19,6 +19,7 @@ type Template struct {
 	MaxSubtaskExecMinutes int              `json:"MAX_SUBTASK_EXECUTION_TIME_MINUTES"`
 	PlanModeLineThreshold int              `json:"PLAN_MODE_LINE_THRESHOLD"`
 	ReLocationTask        *LlmConversation `json:"RE_LOCATION_TASK,omitempty"`
+	ReviewFilterTask      *LlmConversation `json:"REVIEW_FILTER_TASK,omitempty"`
 }
 
 //go:embed task_template.json
@@ -45,7 +46,7 @@ func applyLanguage(conv *LlmConversation, instruction string) {
 // resolveLang returns the resolved language name for the instruction.
 func resolveLang(lang string) string {
 	if lang == "" {
-		return "Chinese"
+		return "English"
 	}
 	return lang
 }

@@ -10,7 +10,7 @@ MR Created/Updated → GitLab Pipeline Triggered → OCR Reviews Diff → Discus
 
 1. When a Merge Request is opened or updated, the pipeline triggers
 2. It installs OCR via npm in a `node:20` Docker image
-3. Runs `ocr review --from origin/<target> --to origin/<source> --format json` to analyze the diff
+3. Runs `ocr review --from origin/<target> --to <commit_sha> --format json --audience agent` to analyze the diff (uses commit SHA to support fork MRs)
 4. Parses the JSON output and posts inline discussions on the MR using GitLab's Discussions API
 
 ## Setup
@@ -39,7 +39,7 @@ Go to your project's **Settings → CI/CD → Variables** and add:
 | `OCR_LLM_URL` | Yes | No | LLM API endpoint URL (e.g., `https://api.openai.com/v1/chat/completions`) |
 | `OCR_LLM_AUTH_TOKEN` | Yes | Yes | API authentication token |
 | `OCR_LLM_MODEL` | No | No | Model name (defaults to `gpt-4o`) |
-| `GITLAB_API_TOKEN` | Yes | Yes | GitLab access token with `api` scope |
+| `GITLAB_API_TOKEN` | No | Yes | GitLab access token with `api` scope (falls back to `CI_JOB_TOKEN` if not set) |
 
 > **Note:** GitLab CI/CD does not support variables with values shorter than 8 characters, so `use_anthropic` cannot be set as a CI variable. The pipeline sets it to `false` by default. If you need to use Anthropic Claude models, you'll need to modify the `.gitlab-ci.yml` script directly.
 >
@@ -53,7 +53,7 @@ You need a token with `api` scope to post discussions on MRs. Options:
 - **Personal Access Token**: User Settings → Access Tokens → Create with `api` scope
 - **Group Access Token**: For organization-wide usage
 
-> **Note:** The built-in `CI_JOB_TOKEN` does NOT have sufficient permissions to create MR discussions, which is why a separate token is needed.
+> **Note:** The built-in `CI_JOB_TOKEN` has limited API scope and may not support all discussion features (e.g., creating new threads on older GitLab versions). If `GITLAB_API_TOKEN` is not set, the pipeline falls back to `CI_JOB_TOKEN` automatically — but for best results, a dedicated token with `api` scope is recommended.
 >
 > **Tip:** For Project Access Tokens and Group Access Tokens, the token name determines the bot name shown in MR discussions. For example, naming your token `OpenCodeReview Bot` will make review comments appear as posted by `OpenCodeReview Bot`.
 
@@ -95,7 +95,7 @@ Use the `--rule` flag to pass a custom rules JSON file:
 
 ```yaml
 script:
-  - ocr review --rule ./my-rules.json --from origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --to origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME
+  - ocr review --rule ./my-rules.json --from origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --to $CI_COMMIT_SHA
 ```
 
 ### Limit concurrency
@@ -104,7 +104,7 @@ Adjust the `--concurrency` flag for large MRs to control the number of concurren
 
 ```yaml
 script:
-  - ocr review --concurrency 5 --from origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --to origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME
+  - ocr review --concurrency 5 --from origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --to $CI_COMMIT_SHA
 ```
 
 ### Provide background context
@@ -113,7 +113,7 @@ Use the `--background` flag to pass additional context that helps OCR better und
 
 ```yaml
 script:
-  - ocr review --background "$CI_MERGE_REQUEST_TITLE" --from origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --to origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME
+  - ocr review --background "$CI_MERGE_REQUEST_TITLE" --from origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --to $CI_COMMIT_SHA
 ```
 
 This is particularly useful when your MR titles follow semantic conventions (e.g., `feat(auth): add OAuth2 support`) that clearly summarize what the MR implements. The background information helps OCR provide more relevant and context-aware review comments.
@@ -168,11 +168,13 @@ script:
 
     # No existing review found - run OCR
     print("🔍 No existing OCR review found. Running review...")
+    COMMIT_SHA = os.environ["CI_COMMIT_SHA"]
     result = subprocess.run([
         "ocr", "review",
         "--from", f"origin/{TARGET_BRANCH}",
-        "--to", f"origin/{SOURCE_BRANCH}",
-        "--format", "json"
+        "--to", COMMIT_SHA,
+        "--format", "json",
+        "--audience", "agent"
     ], capture_output=True, text=True)
 
     # Save output for the posting script

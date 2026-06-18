@@ -200,12 +200,14 @@ type ViewSession struct {
 	Files      []*FileGroup // ordered by file path
 }
 
-// TokenUsageSummary aggregates estimated token counts across the session.
+// TokenUsageSummary aggregates token counts across the session.
 type TokenUsageSummary struct {
 	TotalPromptTokens     int
 	TotalCompletionTokens int
+	TotalCacheReadTokens  int
+	TotalCacheWriteTokens int
 	RequestCount          int
-	FileTokenBreakdown    []FileTokenUsage // populated after parsing
+	FileTokenBreakdown    []FileTokenUsage
 }
 
 // FileTokenUsage tracks token totals for a single file within a session.
@@ -213,6 +215,8 @@ type FileTokenUsage struct {
 	FilePath         string
 	PromptTokens     int
 	CompletionTokens int
+	CacheReadTokens  int
+	CacheWriteTokens int
 }
 
 // FileGroup aggregates records for a single file.
@@ -242,6 +246,8 @@ type TaskCard struct {
 	Model            string
 	PromptTokens     int
 	CompletionTokens int
+	CacheReadTokens  int
+	CacheWriteTokens int
 }
 
 // ToolCallInfo summarizes a single tool call.
@@ -334,12 +340,20 @@ func LoadSession(root, encodedRepo, sessionID string) (*ViewSession, error) {
 
 			promptTok := 0
 			completionTok := 0
+			cacheReadTok := 0
+			cacheWriteTok := 0
 			if usage, ok := rec["usage"].(map[string]any); ok {
 				if v, ok := usage["prompt_tokens"].(float64); ok {
 					promptTok = int(v)
 				}
 				if v, ok := usage["completion_tokens"].(float64); ok {
 					completionTok = int(v)
+				}
+				if v, ok := usage["cache_read_tokens"].(float64); ok {
+					cacheReadTok = int(v)
+				}
+				if v, ok := usage["cache_write_tokens"].(float64); ok {
+					cacheWriteTok = int(v)
 				}
 			}
 
@@ -355,6 +369,8 @@ func LoadSession(root, encodedRepo, sessionID string) (*ViewSession, error) {
 					card.Error = errStr
 					card.PromptTokens = promptTok
 					card.CompletionTokens = completionTok
+					card.CacheReadTokens = cacheReadTok
+					card.CacheWriteTokens = cacheWriteTok
 				}
 			}
 
@@ -453,11 +469,15 @@ func LoadSession(root, encodedRepo, sessionID string) (*ViewSession, error) {
 			for _, c := range cards {
 				vs.TokenUsage.TotalPromptTokens += c.PromptTokens
 				vs.TokenUsage.TotalCompletionTokens += c.CompletionTokens
+				vs.TokenUsage.TotalCacheReadTokens += c.CacheReadTokens
+				vs.TokenUsage.TotalCacheWriteTokens += c.CacheWriteTokens
 				if c.ResponseContent != "" || c.PromptTokens > 0 {
 					vs.TokenUsage.RequestCount++
 				}
 				ft.PromptTokens += c.PromptTokens
 				ft.CompletionTokens += c.CompletionTokens
+				ft.CacheReadTokens += c.CacheReadTokens
+				ft.CacheWriteTokens += c.CacheWriteTokens
 			}
 		}
 		fileBreakdown = append(fileBreakdown, ft)

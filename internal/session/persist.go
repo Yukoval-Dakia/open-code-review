@@ -96,12 +96,12 @@ func (jw *jsonlWriter) open() error {
 	}
 
 	sessionDir := filepath.Join(home, ".opencodereview", "sessions", encodeRepoPath(jw.repoDir))
-	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+	if err := os.MkdirAll(sessionDir, 0700); err != nil {
 		return fmt.Errorf("create session dir: %w", err)
 	}
 
 	filename := filepath.Join(sessionDir, jw.sessionID+".jsonl")
-	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("open session file: %w", err)
 	}
@@ -177,7 +177,7 @@ func (jw *jsonlWriter) WriteLLMRequest(filePath string, taskType TaskType, reque
 }
 
 // WriteLLMResponse writes a response entry with model, content, tool calls, usage.
-func (jw *jsonlWriter) WriteLLMResponse(filePath string, taskType TaskType, content string, toolCalls []map[string]any, model string, promptTokens, completionTokens int, duration time.Duration) string {
+func (jw *jsonlWriter) WriteLLMResponse(filePath string, taskType TaskType, content string, toolCalls []map[string]any, model string, usage TokenUsage, duration time.Duration) string {
 	uuid := generateUUID()
 
 	jw.mu.Lock()
@@ -195,8 +195,10 @@ func (jw *jsonlWriter) WriteLLMResponse(filePath string, taskType TaskType, cont
 		"tool_calls":  toolCalls,
 		"duration_ms": duration.Milliseconds(),
 		"usage": map[string]int{
-			"prompt_tokens":     promptTokens,
-			"completion_tokens": completionTokens,
+			"prompt_tokens":      usage.PromptTokens,
+			"completion_tokens":  usage.CompletionTokens,
+			"cache_read_tokens":  usage.CacheReadTokens,
+			"cache_write_tokens": usage.CacheWriteTokens,
 		},
 	}
 	jw.writeRecordLocked(rec)

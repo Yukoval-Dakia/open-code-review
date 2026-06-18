@@ -10,10 +10,10 @@ PR Created/Updated → GitHub Actions Triggered → OCR Reviews Diff → Comment
 Comment with trigger keyword ↗
 ```
 
-1. When a PR is opened, synchronized, or reopened, the workflow triggers
+1. When a PR is opened, the workflow triggers (uses `pull_request_target` for fork secret access)
 2. Alternatively, when a comment containing `/open-code-review` or `@open-code-review` is posted on a PR, the workflow triggers
 3. It installs OCR via `npm install -g @alibaba-group/open-code-review`
-4. Runs `ocr review --from origin/<base> --to origin/<head> --format json` to analyze the diff
+4. Runs `ocr review --from origin/<base> --to <head_sha> --format json` to analyze the diff (uses commit SHA to support fork PRs)
 5. Parses the JSON output and posts inline review comments on the PR using GitHub's Pull Request Review API
 
 ## Setup
@@ -46,11 +46,11 @@ Go to your repository's **Settings → Secrets and variables → Actions** and a
 
 ### Change the trigger events
 
-Modify the `on.pull_request.types` array in the workflow file:
+Modify the `on.pull_request_target.types` array in the workflow file:
 
 ```yaml
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 ```
 
@@ -60,7 +60,7 @@ By default, the workflow triggers when a PR comment starts with `/open-code-revi
 
 ```yaml
 if: |
-  github.event_name == 'pull_request' ||
+  github.event_name == 'pull_request_target' ||
   (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/review')) ||
   (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '@mybot'))
 ```
@@ -69,7 +69,7 @@ Or use a more flexible pattern with `contains` to trigger on any comment contain
 
 ```yaml
 if: |
-  github.event_name == 'pull_request' ||
+  github.event_name == 'pull_request_target' ||
   (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/review'))
 ```
 
