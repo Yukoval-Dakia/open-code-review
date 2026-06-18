@@ -508,11 +508,14 @@ func (a *Agent) renderExtraContext(ctx context.Context, path, diff, newContent s
 	if len(a.ctxProviders) == 0 {
 		return ""
 	}
+	mode := tool.ParseReviewMode(a.args.From, a.args.To, a.args.Commit)
+	ref, _ := mode.RefValue(a.args.To, a.args.Commit)
 	return reviewctx.Aggregate(ctx, a.ctxProviders, reviewctx.FileReviewInput{
 		RepoDir:    a.args.RepoDir,
 		Path:       path,
 		NewContent: newContent,
 		Diff:       diff,
+		Ref:        ref,
 	}, func(p string, err error) {
 		a.recordWarning("context_provider_error", path, p+": "+err.Error())
 	})

@@ -13,7 +13,7 @@ func requireNode(t *testing.T) {
 	}
 	// typescript must be resolvable from CWD; the impact package dir has none,
 	// so skip unless a global/local install resolves.
-	if !nodeHasTypeScript() {
+	if !(tsAnalyzer{}).nodeHasTypeScript() {
 		t.Skip("typescript not resolvable from CWD")
 	}
 }

@@ -28,16 +28,14 @@ type symRefs struct {
 // CrossRefProvider injects a cross-reference impact summary for the file's
 // changed symbols. Implements reviewctx.ContextProvider.
 type CrossRefProvider struct {
-	enabled   bool
-	maxRefs   int
-	analyzers []LangAnalyzer
+	enabled bool
+	maxRefs int
 }
 
 func NewCrossRefProvider() *CrossRefProvider {
 	p := &CrossRefProvider{
-		enabled:   true,
-		maxRefs:   defaultMaxRefs,
-		analyzers: []LangAnalyzer{goAnalyzer{}, tsAnalyzer{}},
+		enabled: true,
+		maxRefs: defaultMaxRefs,
 	}
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("OCR_IMPACT_CONTEXT")), "off") {
 		p.enabled = false
@@ -52,8 +50,9 @@ func NewCrossRefProvider() *CrossRefProvider {
 
 func (p *CrossRefProvider) Name() string { return "crossref-impact" }
 
-func (p *CrossRefProvider) analyzerFor(path string) LangAnalyzer {
-	for _, a := range p.analyzers {
+// analyzerForPath returns the first LangAnalyzer that supports the given path.
+func analyzerForPath(analyzers []LangAnalyzer, path string) LangAnalyzer {
+	for _, a := range analyzers {
 		if a.Supports(path) {
 			return a
 		}
@@ -65,7 +64,8 @@ func (p *CrossRefProvider) Context(ctx context.Context, in reviewctx.FileReviewI
 	if !p.enabled || p.maxRefs == 0 {
 		return "", nil
 	}
-	a := p.analyzerFor(in.Path)
+	analyzers := []LangAnalyzer{goAnalyzer{}, tsAnalyzer{repoDir: in.RepoDir}}
+	a := analyzerForPath(analyzers, in.Path)
 	if a == nil {
 		return "", nil // unsupported language: skip
 	}
@@ -82,7 +82,11 @@ func (p *CrossRefProvider) Context(ctx context.Context, in reviewctx.FileReviewI
 	total := 0
 	truncated := false
 	for _, sym := range symbols {
-		refs := p.findRefs(ctx, in.RepoDir, in.Path, sym.Name, a)
+		if total >= p.maxRefs {
+			truncated = true
+			break
+		}
+		refs := p.findRefs(ctx, in.RepoDir, in.Ref, in.Path, sym.Name, a)
 		if len(refs) == 0 {
 			continue
 		}
@@ -108,8 +112,13 @@ func (p *CrossRefProvider) Context(ctx context.Context, in reviewctx.FileReviewI
 }
 
 // findRefs greps for candidate files then confirms via the analyzer.
-func (p *CrossRefProvider) findRefs(ctx context.Context, repoDir, defPath, name string, a LangAnalyzer) []Reference {
-	cmd := exec.CommandContext(ctx, "git", "grep", "-l", "-w", "-e", name)
+func (p *CrossRefProvider) findRefs(ctx context.Context, repoDir, ref, defPath, name string, a LangAnalyzer) []Reference {
+	var cmd *exec.Cmd
+	if ref != "" {
+		cmd = exec.CommandContext(ctx, "git", "grep", "-l", "-w", "-e", name, ref)
+	} else {
+		cmd = exec.CommandContext(ctx, "git", "grep", "-l", "-w", "-e", name)
+	}
 	cmd.Dir = repoDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -117,14 +126,22 @@ func (p *CrossRefProvider) findRefs(ctx context.Context, repoDir, defPath, name 
 	}
 	var refs []Reference
 	for _, cand := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if cand == "" || filepath.Clean(cand) == filepath.Clean(defPath) || !a.Supports(cand) {
+		if cand == "" {
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(repoDir, cand))
+		// When grepping at a ref, git prefixes matches as "<ref>:<path>". Strip it.
+		path := cand
+		if ref != "" {
+			path = strings.TrimPrefix(cand, ref+":")
+		}
+		if filepath.Clean(path) == filepath.Clean(defPath) || !a.Supports(path) {
+			continue
+		}
+		body, err := readCandidate(ctx, repoDir, ref, path)
 		if err != nil {
 			continue
 		}
-		found, err := a.References(cand, string(body), name)
+		found, err := a.References(path, body, name)
 		if err != nil {
 			continue
 		}
@@ -137,6 +154,19 @@ func (p *CrossRefProvider) findRefs(ctx context.Context, repoDir, defPath, name 
 		return refs[i].Line < refs[j].Line
 	})
 	return refs
+}
+
+// readCandidate reads a candidate file body at the reviewed ref (git show) or
+// from the working tree when ref is empty.
+func readCandidate(ctx context.Context, repoDir, ref, path string) (string, error) {
+	if ref == "" {
+		b, err := os.ReadFile(filepath.Join(repoDir, path))
+		return string(b), err
+	}
+	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+path)
+	cmd.Dir = repoDir
+	out, err := cmd.Output()
+	return string(out), err
 }
 
 func renderSummary(results []symRefs, truncated bool) string {

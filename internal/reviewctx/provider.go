@@ -12,6 +12,7 @@ type FileReviewInput struct {
 	Path         string       // file under review (new path)
 	NewContent   string       // full new content of the file
 	Diff         string       // the file's unified diff
+	Ref          string       // reviewed git ref; "" = working tree
 	ChangedLines map[int]bool // changed line numbers in the new file
 }
 

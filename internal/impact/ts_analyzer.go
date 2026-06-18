@@ -11,7 +11,7 @@ import (
 //go:embed ts_refs.js
 var tsRefsScript []byte
 
-type tsAnalyzer struct{}
+type tsAnalyzer struct{ repoDir string }
 
 func (tsAnalyzer) Supports(path string) bool {
 	return strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".tsx")
@@ -37,13 +37,16 @@ type tsResponse struct {
 	Error string `json:"error"`
 }
 
-func runTSHelper(req tsRequest) (tsResponse, error) {
+func (a tsAnalyzer) runTSHelper(req tsRequest) (tsResponse, error) {
 	var resp tsResponse
 	in, err := json.Marshal(req)
 	if err != nil {
 		return resp, err
 	}
 	cmd := exec.Command("node", "-e", string(tsRefsScript))
+	if a.repoDir != "" {
+		cmd.Dir = a.repoDir
+	}
 	cmd.Stdin = strings.NewReader(string(in))
 	out, err := cmd.Output()
 	if err != nil {
@@ -62,18 +65,22 @@ type helperError struct{ msg string }
 
 func (e *helperError) Error() string { return "ts helper: " + e.msg }
 
-// nodeHasTypeScript reports whether node can require('typescript') from CWD.
-func nodeHasTypeScript() bool {
+// nodeHasTypeScript reports whether node can require('typescript') from the
+// analyzer's repoDir (or CWD when repoDir is empty).
+func (a tsAnalyzer) nodeHasTypeScript() bool {
 	cmd := exec.Command("node", "-e", "require.resolve('typescript')")
+	if a.repoDir != "" {
+		cmd.Dir = a.repoDir
+	}
 	return cmd.Run() == nil
 }
 
-func (tsAnalyzer) ChangedSymbols(content string, changed map[int]bool) ([]Symbol, error) {
+func (a tsAnalyzer) ChangedSymbols(content string, changed map[int]bool) ([]Symbol, error) {
 	lines := make([]int, 0, len(changed))
 	for ln := range changed {
 		lines = append(lines, ln)
 	}
-	resp, err := runTSHelper(tsRequest{Mode: "symbols", Content: content, Changed: lines})
+	resp, err := a.runTSHelper(tsRequest{Mode: "symbols", Content: content, Changed: lines})
 	if err != nil {
 		return nil, err
 	}
@@ -84,8 +91,8 @@ func (tsAnalyzer) ChangedSymbols(content string, changed map[int]bool) ([]Symbol
 	return out, nil
 }
 
-func (tsAnalyzer) References(path, content, name string) ([]Reference, error) {
-	resp, err := runTSHelper(tsRequest{Mode: "refs", Content: content, Name: name})
+func (a tsAnalyzer) References(path, content, name string) ([]Reference, error) {
+	resp, err := a.runTSHelper(tsRequest{Mode: "refs", Content: content, Name: name})
 	if err != nil {
 		return nil, err
 	}

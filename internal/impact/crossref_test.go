@@ -87,3 +87,36 @@ func TestCrossRefProviderDisabled(t *testing.T) {
 		t.Fatalf("disabled provider should return empty, got %q err %v", out, err)
 	}
 }
+
+// TestCrossRefProviderRefMode verifies that when Ref is set the provider greps
+// at the given ref (HEAD) rather than the working tree. The test commits
+// caller.go with a Foo() call, then overwrites it in the working tree to
+// remove the call. With Ref="HEAD" the cross-ref must still report caller.go.
+func TestCrossRefProviderRefMode(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir, map[string]string{
+		"def.go":    "package p\nfunc Foo() {}\n",
+		"caller.go": "package p\nfunc bar() { Foo() }\n",
+	})
+
+	// Overwrite caller.go in the working tree so Foo() call is gone.
+	callerPath := filepath.Join(dir, "caller.go")
+	if err := os.WriteFile(callerPath, []byte("package p\nfunc bar() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewCrossRefProvider()
+	out, err := p.Context(context.Background(), reviewctx.FileReviewInput{
+		RepoDir:    dir,
+		Path:       "def.go",
+		NewContent: "package p\nfunc Foo() {}\n",
+		Diff:       "@@ -0,0 +1,2 @@\n+package p\n+func Foo() {}\n",
+		Ref:        "HEAD",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.Contains(out, "Foo") || !strings.Contains(out, "caller.go") {
+		t.Fatalf("ref-mode should report caller.go (at HEAD), got:\n%s", out)
+	}
+}
