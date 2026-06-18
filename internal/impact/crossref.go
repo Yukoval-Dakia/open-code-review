@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,7 +75,7 @@ func (p *CrossRefProvider) Context(ctx context.Context, in reviewctx.FileReviewI
 	}
 	symbols, err := a.ChangedSymbols(in.NewContent, changed)
 	if err != nil || len(symbols) == 0 {
-		return "", err // parse error or nothing changed: skip (caller logs err)
+		return "", nil // parse error or nothing changed: skip silently
 	}
 
 	var results []symRefs
@@ -116,10 +117,10 @@ func (p *CrossRefProvider) findRefs(ctx context.Context, repoDir, defPath, name 
 	}
 	var refs []Reference
 	for _, cand := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if cand == "" || cand == defPath || !a.Supports(cand) {
+		if cand == "" || filepath.Clean(cand) == filepath.Clean(defPath) || !a.Supports(cand) {
 			continue
 		}
-		body, err := os.ReadFile(repoDir + string(os.PathSeparator) + cand)
+		body, err := os.ReadFile(filepath.Join(repoDir, cand))
 		if err != nil {
 			continue
 		}

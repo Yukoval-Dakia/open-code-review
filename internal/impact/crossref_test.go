@@ -54,6 +54,31 @@ func TestCrossRefProviderGoImpact(t *testing.T) {
 	}
 }
 
+func TestCrossRefProviderDefFileNotReported(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir, map[string]string{
+		"def.go":    "package p\nfunc Foo() {}\n",
+		"caller.go": "package p\nfunc bar() { Foo() }\n",
+	})
+	p := NewCrossRefProvider()
+	// Pass "./def.go" with a leading "./" prefix to exercise filepath.Clean normalization.
+	out, err := p.Context(context.Background(), reviewctx.FileReviewInput{
+		RepoDir:    dir,
+		Path:       "./def.go",
+		NewContent: "package p\nfunc Foo() {}\n",
+		Diff:       "@@ -0,0 +1,2 @@\n+package p\n+func Foo() {}\n",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.Contains(out, "caller.go") {
+		t.Fatalf("expected output to mention caller.go, got:\n%s", out)
+	}
+	if strings.Contains(out, "def.go") {
+		t.Fatalf("definition file def.go must NOT appear as a reference, got:\n%s", out)
+	}
+}
+
 func TestCrossRefProviderDisabled(t *testing.T) {
 	t.Setenv("OCR_IMPACT_CONTEXT", "off")
 	p := NewCrossRefProvider()
