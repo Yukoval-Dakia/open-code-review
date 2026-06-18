@@ -16,8 +16,10 @@ import (
 	"github.com/open-code-review/open-code-review/internal/config/toolsconfig"
 	"github.com/open-code-review/open-code-review/internal/diff"
 	"github.com/open-code-review/open-code-review/internal/gitcmd"
+	"github.com/open-code-review/open-code-review/internal/impact"
 	"github.com/open-code-review/open-code-review/internal/llm"
 	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/open-code-review/open-code-review/internal/reviewctx"
 	"github.com/open-code-review/open-code-review/internal/session"
 	"github.com/open-code-review/open-code-review/internal/stdout"
 	"github.com/open-code-review/open-code-review/internal/telemetry"
@@ -173,6 +175,7 @@ type Agent struct {
 	warnings              []AgentWarning
 	compressionMu         sync.Mutex
 	pendingJob            *compressionJob
+	ctxProviders          []reviewctx.ContextProvider
 }
 
 // CommentWorkerPool manages a fixed-size pool of workers dedicated to
@@ -247,10 +250,14 @@ func New(args Args) *Agent {
 			DiffCommit: args.Commit,
 		})
 	}
-	return &Agent{
+	a := &Agent{
 		args:    args,
 		session: args.Session,
 	}
+	if a.ctxProviders == nil {
+		a.ctxProviders = []reviewctx.ContextProvider{impact.NewCrossRefProvider()}
+	}
+	return a
 }
 
 // Run executes the full review pipeline: parse diffs -> plan per file -> LLM tool-loop -> collect comments.
@@ -495,6 +502,22 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 	return a.args.CommentCollector.Comments(), nil
 }
 
+// renderExtraContext calls all configured ContextProviders and returns their
+// aggregated output. Provider errors are recorded as non-fatal warnings.
+func (a *Agent) renderExtraContext(ctx context.Context, path, diff, newContent string) string {
+	if len(a.ctxProviders) == 0 {
+		return ""
+	}
+	return reviewctx.Aggregate(ctx, a.ctxProviders, reviewctx.FileReviewInput{
+		RepoDir:    a.args.RepoDir,
+		Path:       path,
+		NewContent: newContent,
+		Diff:       diff,
+	}, func(p string, err error) {
+		a.recordWarning("context_provider_error", path, p+": "+err.Error())
+	})
+}
+
 // executeSubtask performs the Plan Phase + Main Loop for a single file.
 func (a *Agent) executeSubtask(ctx context.Context, d model.Diff) error {
 	ctx, span := telemetry.StartSpan(ctx, "subtask.execute."+d.NewPath)
@@ -543,6 +566,7 @@ func (a *Agent) executeSubtask(ctx context.Context, d model.Diff) error {
 	}
 
 	rawMsgs := a.args.Template.MainTask.Messages
+	extra := a.renderExtraContext(ctx, newPath, d.Diff, d.NewFileContent)
 	messages := make([]llm.Message, 0, len(rawMsgs))
 	for _, m := range rawMsgs {
 		content := m.Content
@@ -551,6 +575,7 @@ func (a *Agent) executeSubtask(ctx context.Context, d model.Diff) error {
 		content = strings.ReplaceAll(content, "{{system_rule}}", rule)
 		content = strings.ReplaceAll(content, "{{change_files}}", changeFilesExcludingCurrent)
 		content = strings.ReplaceAll(content, "{{diff}}", d.Diff)
+		content = strings.ReplaceAll(content, "{{extra_context}}", extra)
 		content = strings.ReplaceAll(content, "{{requirement_background}}", a.args.Background)
 		// Always substitute the {{plan_guidance}} token so the literal placeholder
 		// never leaks into the rendered prompt. When the plan phase produced no
