@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/open-code-review/open-code-review/internal/agent"
+	"github.com/open-code-review/open-code-review/internal/learn"
 	"github.com/open-code-review/open-code-review/internal/config/rules"
 	"github.com/open-code-review/open-code-review/internal/config/template"
 	"github.com/open-code-review/open-code-review/internal/config/toolsconfig"
@@ -116,6 +117,8 @@ func runReview(args []string) error {
 		Runner:  gitRunner,
 	}
 	tools := buildToolRegistry(collector, fileReader)
+
+	runLearningsIngest(context.Background(), repoDir, ep.Token, gitRunner)
 
 	ag := agent.New(agent.Args{
 		RepoDir:               repoDir,
@@ -295,4 +298,39 @@ func buildToolRegistry(collector *tool.CommentCollector, fr *tool.FileReader) *t
 	reg.Register(tool.NewCodeSearch(fr))
 	reg.Register(&tool.CodeCommentProvider{Collector: collector})
 	return reg
+}
+
+// runLearningsIngest ingests PR feedback (if configured) into the local store.
+// Best-effort: every failure path warns and returns without affecting the review.
+func runLearningsIngest(ctx context.Context, repoDir, token string, gitRunner *gitcmd.Runner) {
+	cfg := learn.LoadConfig()
+	if !cfg.Enabled || cfg.FeedbackPath == "" {
+		return // disabled, or no feedback file supplied by the workflow
+	}
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "[ocr] learnings: no LLM token; skipping ingestion")
+		return
+	}
+	remote, _ := gitRunner.Run(ctx, repoDir, "remote", "get-url", "origin")
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		remote = repoDir // fall back to repo path as the store key
+	}
+	storePath, err := learn.RepoStorePath(remote)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ocr] learnings: store path: %v (skipped)\n", err)
+		return
+	}
+	store, err := learn.OpenStore(storePath, learn.DefaultSoftCap)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ocr] learnings: open store: %v (skipped)\n", err)
+		return
+	}
+	emb := learn.NewBigModelEmbedder(cfg.EmbedURL, token, cfg.EmbedModel)
+	added, err := learn.Ingest(ctx, store, emb, cfg.FeedbackPath, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ocr] learnings: ingest: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[ocr] learnings: ingested %d new feedback item(s); store now has %d\n", added, store.Len())
 }
