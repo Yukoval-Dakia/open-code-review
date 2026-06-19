@@ -1,6 +1,7 @@
 package learn
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -72,5 +73,54 @@ func TestOpenStoreMissingFileIsEmpty(t *testing.T) {
 	}
 	if s.Len() != 0 {
 		t.Fatalf("Len = %d, want 0", s.Len())
+	}
+}
+
+func TestAppendRejectsEmptyCommentID(t *testing.T) {
+	p := tmpStorePath(t)
+	s, err := OpenStore(p, 100)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	added, err := s.Append(Learning{CommentID: "", Body: "no-id"})
+	if err != nil {
+		t.Fatalf("Append empty id should return nil error, got: %v", err)
+	}
+	if added {
+		t.Fatal("Append empty id should return added=false")
+	}
+	if s.Len() != 0 {
+		t.Fatalf("Len = %d, want 0", s.Len())
+	}
+}
+
+func TestAppendRollsBackOnFlushError(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "store.jsonl")
+
+	// Open succeeds (missing file is OK).
+	s, err := OpenStore(storePath, 100)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+
+	// Make the directory read-only so os.Create of the .tmp file fails.
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+
+	added, err := s.Append(Learning{CommentID: "c1", Body: "hello"})
+	if err == nil {
+		t.Fatal("expected flush error, got nil")
+	}
+	if added {
+		t.Fatalf("added should be false on flush failure, got true")
+	}
+	if s.Len() != 0 {
+		t.Fatalf("Len = %d after failed append, want 0 (rollback)", s.Len())
+	}
+	if s.Has("c1") {
+		t.Fatal("Has(c1) should be false after rollback")
 	}
 }

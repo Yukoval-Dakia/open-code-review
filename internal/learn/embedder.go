@@ -64,9 +64,12 @@ func (e *BigModelEmbedder) Embed(ctx context.Context, text string) ([]float32, e
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("embedding API status %d: %s", resp.StatusCode, string(raw))
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("read embedding response: %w", readErr)
 	}
 	var parsed embedResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {

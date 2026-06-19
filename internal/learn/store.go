@@ -55,13 +55,26 @@ func (s *LearningStore) Has(commentID string) bool {
 // Len returns the number of stored learnings.
 func (s *LearningStore) Len() int { return len(s.entries) }
 
-// Append adds a learning (no-op if its CommentID already exists), evicts the
-// oldest entries beyond the soft cap, and rewrites the file. Returns whether a
-// new entry was added.
+// Append adds a learning (no-op if its CommentID already exists or is empty),
+// evicts the oldest entries beyond the soft cap, and rewrites the file. Returns
+// whether a new entry was added.
 func (s *LearningStore) Append(l Learning) (bool, error) {
-	if l.CommentID != "" && s.Has(l.CommentID) {
+	// Fix 3: reject entries with no CommentID — they can't be deduped.
+	if l.CommentID == "" {
 		return false, nil
 	}
+	if s.Has(l.CommentID) {
+		return false, nil
+	}
+
+	// Snapshot pre-mutation state for rollback on flush failure.
+	prevEntries := make([]Learning, len(s.entries))
+	copy(prevEntries, s.entries)
+	prevIndex := make(map[string]int, len(s.index))
+	for k, v := range s.index {
+		prevIndex[k] = v
+	}
+
 	s.entries = append(s.entries, l)
 	if s.cap > 0 && len(s.entries) > s.cap {
 		drop := len(s.entries) - s.cap
@@ -73,8 +86,12 @@ func (s *LearningStore) Append(l Learning) (bool, error) {
 	for i, e := range s.entries {
 		s.index[e.CommentID] = i
 	}
+
+	// Fix 1: roll back in-memory state if flush fails.
 	if err := s.flush(); err != nil {
-		return true, err
+		s.entries = prevEntries
+		s.index = prevIndex
+		return false, err
 	}
 	return true, nil
 }
@@ -89,6 +106,9 @@ func (s *LearningStore) flush() error {
 	if err != nil {
 		return err
 	}
+	// Fix 2: clean up tmp file on any error path; harmless no-op after rename.
+	defer os.Remove(tmp)
+
 	w := bufio.NewWriter(f)
 	enc := json.NewEncoder(w)
 	for _, e := range s.entries {
