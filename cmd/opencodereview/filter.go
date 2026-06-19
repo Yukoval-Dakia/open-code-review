@@ -30,8 +30,8 @@ func severityRank(s string) int {
 // it fits the existing OCR_* / CI configuration style:
 //
 //	OCR_DISABLE_SEVERITY_FILTER=1   turn the filter off entirely
-//	OCR_MIN_SEVERITY=major          minimum severity kept (blocker|major|minor|nit)
-//	OCR_MIN_CONFIDENCE=0.7          minimum self-assessed confidence kept (0.0-1.0)
+//	OCR_MIN_SEVERITY=minor          minimum severity kept (blocker|major|minor|nit)
+//	OCR_MIN_CONFIDENCE=0.5          minimum self-assessed confidence kept (0.0-1.0)
 type commentFilter struct {
 	enabled          bool
 	minSeverity      int
@@ -42,9 +42,9 @@ type commentFilter struct {
 func loadCommentFilter() commentFilter {
 	f := commentFilter{
 		enabled:          true,
-		minSeverity:      severityRank("major"),
-		minSeverityLabel: "major",
-		minConfidence:    0.7,
+		minSeverity:      severityRank("minor"),
+		minSeverityLabel: "minor",
+		minConfidence:    0.5,
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("OCR_DISABLE_SEVERITY_FILTER"))) {
 	case "1", "true", "yes":
