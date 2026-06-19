@@ -17,6 +17,11 @@ import (
 const (
 	defaultMaxRefs      = 20
 	defaultPerSymbolCap = 8
+	// defaultMaxSymbols bounds how many changed symbols we probe per file. Each
+	// symbol costs one git-grep subprocess; a large generated/refactored file
+	// could otherwise declare hundreds of symbols and spawn hundreds of greps
+	// even though only maxRefs references survive.
+	defaultMaxSymbols = 25
 )
 
 // symRefs pairs a changed symbol with its confirmed cross-file references.
@@ -81,6 +86,10 @@ func (p *CrossRefProvider) Context(ctx context.Context, in reviewctx.FileReviewI
 	var results []symRefs
 	total := 0
 	truncated := false
+	if len(symbols) > defaultMaxSymbols {
+		symbols = symbols[:defaultMaxSymbols]
+		truncated = true
+	}
 	for _, sym := range symbols {
 		if total >= p.maxRefs {
 			truncated = true

@@ -510,7 +510,7 @@ func (a *Agent) renderExtraContext(ctx context.Context, path, diff, newContent s
 	}
 	mode := tool.ParseReviewMode(a.args.From, a.args.To, a.args.Commit)
 	ref, _ := mode.RefValue(a.args.To, a.args.Commit)
-	return reviewctx.Aggregate(ctx, a.ctxProviders, reviewctx.FileReviewInput{
+	out := reviewctx.Aggregate(ctx, a.ctxProviders, reviewctx.FileReviewInput{
 		RepoDir:    a.args.RepoDir,
 		Path:       path,
 		NewContent: newContent,
@@ -519,6 +519,13 @@ func (a *Agent) renderExtraContext(ctx context.Context, path, diff, newContent s
 	}, func(p string, err error) {
 		a.recordWarning("context_provider_error", path, p+": "+err.Error())
 	})
+	// Wrap only when there is content, so files with no extra context (most
+	// non-Go/TS files) don't leave an empty <cross_reference_impact></...> block
+	// in the prompt. The template carries the bare {{extra_context}} token.
+	if strings.TrimSpace(out) == "" {
+		return ""
+	}
+	return "<cross_reference_impact>\n" + out + "\n</cross_reference_impact>\n\n"
 }
 
 // executeSubtask performs the Plan Phase + Main Loop for a single file.
