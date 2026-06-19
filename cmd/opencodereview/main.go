@@ -52,6 +52,8 @@ func dispatch() error {
 		return runLLM(args[1:])
 	case "rules":
 		return runRules(args[1:])
+	case "learn":
+		return runLearn(args[1:])
 	case "viewer":
 		return runViewer(args[1:])
 	case "-h", "--help":
@@ -71,6 +73,7 @@ Usage:
 Commands:
   review, r    Start a code review
   rules        Inspect and debug review rules
+  learn        Collect prior-review feedback into the learnings store
   config       Manage configuration settings
   llm          LLM utility commands
   viewer       Start the WebUI session viewer
