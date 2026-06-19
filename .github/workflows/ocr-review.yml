@@ -65,6 +65,111 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
 
+      # Learnings (Phase 1): retroactively collect resolve/reply state of OCR's
+      # prior inline comments on THIS PR, derive a verdict per comment, and write
+      # feedback.json. The OCR binary ingests it (best-effort) during review.
+      - name: Collect prior-review feedback (learnings)
+        id: collect-feedback
+        uses: actions/github-script@v7
+        env:
+          # Login of the account that posts OCR review comments (the workflow's
+          # GITHUB_TOKEN → github-actions[bot] by default).
+          OCR_BOT_LOGIN: ${{ vars.OCR_BOT_LOGIN || 'github-actions[bot]' }}
+          # An unresolved thread older than this many days counts as rejected (weak).
+          OCR_FEEDBACK_REJECT_AGE_DAYS: ${{ vars.OCR_FEEDBACK_REJECT_AGE_DAYS || '3' }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const FEEDBACK_PATH = '/tmp/ocr-feedback.json';
+            const botLogin = process.env.OCR_BOT_LOGIN;
+            const rejectAgeDays = parseInt(process.env.OCR_FEEDBACK_REJECT_AGE_DAYS, 10) || 3;
+            const rejectAgeMs = rejectAgeDays * 24 * 60 * 60 * 1000;
+            const prNumber = context.issue.number;
+
+            // A human reply containing one of these markers => the comment was rejected.
+            const DISAGREE = [
+              'disagree', 'not a', 'false positive', 'wrong', 'incorrect', 'nope',
+              'wontfix', "won't fix", 'invalid', 'not an issue', 'no need',
+              '不对', '不需要', '误报', '没问题', '不用改', '不是问题', '无需', '不认同',
+            ];
+
+            const query = `
+              query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+                repository(owner:$owner,name:$repo){
+                  pullRequest(number:$pr){
+                    reviewThreads(first:100, after:$cursor){
+                      pageInfo{ hasNextPage endCursor }
+                      nodes{
+                        isResolved
+                        comments(first:50){
+                          nodes{ id body path createdAt author{ login } }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+
+            const items = [];
+            let skipped = 0;
+            let cursor = null;
+            try {
+              while (true) {
+                const data = await github.graphql(query, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pr: prNumber,
+                  cursor,
+                });
+                const conn = data.repository.pullRequest.reviewThreads;
+                for (const thread of conn.nodes) {
+                  const comments = (thread.comments && thread.comments.nodes) || [];
+                  if (comments.length === 0) continue;
+                  const origin = comments[0];
+                  // Only OCR's own comments are learnings.
+                  if (!origin.author || origin.author.login !== botLogin) continue;
+                  if (!origin.body) { skipped++; continue; }
+
+                  let verdict = null;
+                  if (thread.isResolved) {
+                    verdict = 'accepted';
+                  } else {
+                    // Look for a disagreeing human reply.
+                    const humanReplyDisagrees = comments.slice(1).some(c => {
+                      if (!c.author || c.author.login === botLogin) return false;
+                      const b = (c.body || '').toLowerCase();
+                      return DISAGREE.some(k => b.includes(k));
+                    });
+                    if (humanReplyDisagrees) {
+                      verdict = 'rejected';
+                    } else {
+                      const ageMs = new Date().getTime() - new Date(origin.createdAt).getTime();
+                      if (ageMs >= rejectAgeMs) verdict = 'rejected'; // long-unresolved (weak)
+                    }
+                  }
+
+                  if (verdict !== 'accepted' && verdict !== 'rejected') { skipped++; continue; }
+                  items.push({
+                    comment_id: origin.id,
+                    body: origin.body,
+                    path: origin.path || '',
+                    symbol: '',
+                    verdict,
+                  });
+                }
+                if (!conn.pageInfo.hasNextPage) break;
+                cursor = conn.pageInfo.endCursor;
+              }
+            } catch (e) {
+              console.log('Feedback collection failed (non-fatal):', e.message);
+              // Leave whatever we gathered; downstream ingest is best-effort.
+            }
+
+            fs.writeFileSync(FEEDBACK_PATH, JSON.stringify(items, null, 2));
+            console.log(`Collected ${items.length} verdicted feedback item(s); skipped ${skipped} ambiguous.`);
+            core.setOutput('feedback_path', FEEDBACK_PATH);
+
       - name: Run OpenCodeReview (zai/bigmodel anthropic backend)
         id: review
         env:
@@ -72,6 +177,9 @@ jobs:
           OCR_LLM_URL: ${{ vars.OCR_LLM_URL }}
           OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
           OCR_LLM_MODEL: ${{ vars.OCR_LLM_MODEL }}
+          # Learnings ingestion: feed the collector's feedback.json to OCR.
+          OCR_LEARNINGS: on
+          OCR_LEARNINGS_FEEDBACK: ${{ steps.collect-feedback.outputs.feedback_path }}
         run: |
           # Get base and head refs from PR context (different for comment triggers)
           if [ "${{ github.event_name }}" = "pull_request" ]; then
