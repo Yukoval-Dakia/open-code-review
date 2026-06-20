@@ -77,98 +77,14 @@ jobs:
           OCR_BOT_LOGIN: ${{ vars.OCR_BOT_LOGIN || 'github-actions[bot]' }}
           # An unresolved thread older than this many days counts as rejected (weak).
           OCR_FEEDBACK_REJECT_AGE_DAYS: ${{ vars.OCR_FEEDBACK_REJECT_AGE_DAYS || '3' }}
+          OCR_FEEDBACK_PATH: /tmp/ocr-feedback.json
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const FEEDBACK_PATH = '/tmp/ocr-feedback.json';
-            const botLogin = process.env.OCR_BOT_LOGIN;
-            const rejectAgeDays = parseInt(process.env.OCR_FEEDBACK_REJECT_AGE_DAYS, 10) || 3;
-            const rejectAgeMs = rejectAgeDays * 24 * 60 * 60 * 1000;
-            const prNumber = context.issue.number;
-
-            // A human reply containing one of these markers => the comment was rejected.
-            const DISAGREE = [
-              'disagree', 'not a', 'false positive', 'wrong', 'incorrect', 'nope',
-              'wontfix', "won't fix", 'invalid', 'not an issue', 'no need',
-              '不对', '不需要', '误报', '没问题', '不用改', '不是问题', '无需', '不认同',
-            ];
-
-            const query = `
-              query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
-                repository(owner:$owner,name:$repo){
-                  pullRequest(number:$pr){
-                    reviewThreads(first:100, after:$cursor){
-                      pageInfo{ hasNextPage endCursor }
-                      nodes{
-                        isResolved
-                        comments(first:50){
-                          nodes{ id body path createdAt author{ login } }
-                        }
-                      }
-                    }
-                  }
-                }
-              }`;
-
-            const items = [];
-            let skipped = 0;
-            let cursor = null;
-            try {
-              while (true) {
-                const data = await github.graphql(query, {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pr: prNumber,
-                  cursor,
-                });
-                const conn = data.repository.pullRequest.reviewThreads;
-                for (const thread of conn.nodes) {
-                  const comments = (thread.comments && thread.comments.nodes) || [];
-                  if (comments.length === 0) continue;
-                  const origin = comments[0];
-                  // Only OCR's own comments are learnings.
-                  if (!origin.author || origin.author.login !== botLogin) continue;
-                  if (!origin.body) { skipped++; continue; }
-
-                  let verdict = null;
-                  if (thread.isResolved) {
-                    verdict = 'accepted';
-                  } else {
-                    // Look for a disagreeing human reply.
-                    const humanReplyDisagrees = comments.slice(1).some(c => {
-                      if (!c.author || c.author.login === botLogin) return false;
-                      const b = (c.body || '').toLowerCase();
-                      return DISAGREE.some(k => b.includes(k));
-                    });
-                    if (humanReplyDisagrees) {
-                      verdict = 'rejected';
-                    } else {
-                      const ageMs = new Date().getTime() - new Date(origin.createdAt).getTime();
-                      if (ageMs >= rejectAgeMs) verdict = 'rejected'; // long-unresolved (weak)
-                    }
-                  }
-
-                  if (verdict !== 'accepted' && verdict !== 'rejected') { skipped++; continue; }
-                  items.push({
-                    comment_id: origin.id,
-                    body: origin.body,
-                    path: origin.path || '',
-                    symbol: '',
-                    verdict,
-                  });
-                }
-                if (!conn.pageInfo.hasNextPage) break;
-                cursor = conn.pageInfo.endCursor;
-              }
-            } catch (e) {
-              console.log('Feedback collection failed (non-fatal):', e.message);
-              // Leave whatever we gathered; downstream ingest is best-effort.
-            }
-
-            fs.writeFileSync(FEEDBACK_PATH, JSON.stringify(items, null, 2));
-            console.log(`Collected ${items.length} verdicted feedback item(s); skipped ${skipped} ambiguous.`);
-            core.setOutput('feedback_path', FEEDBACK_PATH);
+            const { collectFeedback } = require(
+              `${process.env.GITHUB_WORKSPACE}/scripts/github-actions/collect-feedback.js`);
+            await collectFeedback({ github, context, core, fs, env: process.env });
 
       - name: Run OpenCodeReview (zai/bigmodel anthropic backend)
         id: review
@@ -226,7 +142,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: `⚠️ **OpenCodeReview** encountered an error:\n\`\`\`\n${stderr}\n\`\`\``
+                  body: `⚠️ **OpenCodeReview** encountered an error:\n${fencedBlock(stderr)}`
                 });
               }
               return;
@@ -370,11 +286,15 @@ jobs:
                 finalBody += `\n- ❌ Failed to post: ${failedCount} comment(s)`;
               }
 
-              // Add failed comments details
+              // Add failed comments details. Include the full comment body so a
+              // finding whose inline placement failed is never lost — it stays
+              // visible in the summary instead of being reduced to path+error.
               if (failedComments.length > 0) {
                 finalBody += '\n\n<details><summary>❌ Failed Comments Details</summary>\n\n';
                 for (const { comment, error } of failedComments) {
-                  finalBody += `- \`${comment.path}\`: ${error}\n`;
+                  finalBody += `\n#### 📄 \`${comment.path}\`\n`;
+                  finalBody += `_Could not post inline: ${error}_\n\n`;
+                  if (comment.body) finalBody += `${comment.body}\n`;
                 }
                 finalBody += '\n</details>';
               }
@@ -393,10 +313,7 @@ jobs:
               // Add code suggestion if available
               if (comment.suggestion_code && comment.existing_code) {
                 body += '\n\n**Suggestion:**\n';
-                body += '```suggestion\n';
-                body += comment.suggestion_code;
-                if (!comment.suggestion_code.endsWith('\n')) body += '\n';
-                body += '```';
+                body += fencedBlock(comment.suggestion_code, 'suggestion');
               }
 
               return body;
@@ -412,10 +329,26 @@ jobs:
 
               if (comment.suggestion_code && comment.existing_code) {
                 md += '\n\n<details><summary>💡 Suggested Change</summary>\n\n';
-                md += '**Before:**\n```\n' + comment.existing_code + '\n```\n\n';
-                md += '**After:**\n```\n' + comment.suggestion_code + '\n```\n\n';
+                md += '**Before:**\n' + fencedBlock(comment.existing_code) + '\n\n';
+                md += '**After:**\n' + fencedBlock(comment.suggestion_code) + '\n\n';
                 md += '</details>';
               }
 
               return md;
+            }
+
+            // fencedBlock wraps content in a code fence long enough that any
+            // backtick runs inside it cannot prematurely close the block.
+            function fencedBlock(content, language = '') {
+              const text = String(content || '');
+              const fence = safeFence(text);
+              let block = fence + language + '\n' + text;
+              if (!text.endsWith('\n')) block += '\n';
+              return block + fence;
+            }
+
+            function safeFence(content) {
+              const matches = String(content || '').match(/`+/g) || [];
+              const maxTicks = matches.reduce((max, ticks) => Math.max(max, ticks.length), 0);
+              return '`'.repeat(Math.max(3, maxTicks + 1));
             }

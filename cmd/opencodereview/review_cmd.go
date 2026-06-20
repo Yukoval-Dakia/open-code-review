@@ -118,7 +118,7 @@ func runReview(args []string) error {
 	}
 	tools := buildToolRegistry(collector, fileReader)
 
-	runLearningsIngest(context.Background(), repoDir, ep.Token, gitRunner)
+	suppressor := setupLearnings(context.Background(), repoDir, ep.Token, gitRunner)
 
 	ag := agent.New(agent.Args{
 		RepoDir:               repoDir,
@@ -174,6 +174,19 @@ func runReview(args []string) error {
 		if dropped > 0 {
 			fmt.Fprintf(os.Stderr, "[ocr] severity filter dropped %d comment(s) below min-severity=%s / min-confidence=%.2f (set OCR_DISABLE_SEVERITY_FILTER=1 to disable)\n",
 				dropped, cf.minSeverityLabel, cf.minConfidence)
+		}
+	}
+
+	// Suppress comments that repeat a previously human-rejected finding (the
+	// multi-round re-flag problem). No-op unless cross-PR learnings are
+	// configured and the store holds rejected verdicts. Never silently
+	// truncated; set OCR_REFLAG_SUPPRESS=off to disable.
+	if suppressor.enabled {
+		var reflagged int
+		comments, reflagged = suppressor.apply(ctx, comments)
+		if reflagged > 0 {
+			fmt.Fprintf(os.Stderr, "[ocr] reflag suppressor dropped %d comment(s) matching prior rejected findings (cosine>=%.2f; set OCR_REFLAG_SUPPRESS=off to disable)\n",
+				reflagged, suppressor.threshold)
 		}
 	}
 
@@ -300,16 +313,18 @@ func buildToolRegistry(collector *tool.CommentCollector, fr *tool.FileReader) *t
 	return reg
 }
 
-// runLearningsIngest ingests PR feedback (if configured) into the local store.
-// Best-effort: every failure path warns and returns without affecting the review.
-func runLearningsIngest(ctx context.Context, repoDir, token string, gitRunner *gitcmd.Runner) {
+// setupLearnings ingests PR feedback (if configured) into the local store and
+// returns a re-flag suppressor backed by that same store + embedder. Best-effort:
+// every failure path warns and returns a disabled suppressor (zero value) so the
+// review proceeds unaffected.
+func setupLearnings(ctx context.Context, repoDir, token string, gitRunner *gitcmd.Runner) reflagSuppressor {
 	cfg := learn.LoadConfig()
-	if !cfg.Enabled || cfg.FeedbackPath == "" {
-		return // disabled, or no feedback file supplied by the workflow
+	if !cfg.Enabled {
+		return reflagSuppressor{} // disabled
 	}
 	if token == "" {
-		fmt.Fprintln(os.Stderr, "[ocr] learnings: no LLM token; skipping ingestion")
-		return
+		fmt.Fprintln(os.Stderr, "[ocr] learnings: no LLM token; skipping")
+		return reflagSuppressor{}
 	}
 	remote, _ := gitRunner.Run(ctx, repoDir, "remote", "get-url", "origin")
 	remote = strings.TrimSpace(remote)
@@ -319,18 +334,24 @@ func runLearningsIngest(ctx context.Context, repoDir, token string, gitRunner *g
 	storePath, err := learn.RepoStorePath(remote)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ocr] learnings: store path: %v (skipped)\n", err)
-		return
+		return reflagSuppressor{}
 	}
 	store, err := learn.OpenStore(storePath, learn.DefaultSoftCap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ocr] learnings: open store: %v (skipped)\n", err)
-		return
+		return reflagSuppressor{}
 	}
 	emb := learn.NewBigModelEmbedder(cfg.EmbedURL, token, cfg.EmbedModel)
-	added, err := learn.Ingest(ctx, store, emb, cfg.FeedbackPath, time.Now().UTC().Format(time.RFC3339))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[ocr] learnings: ingest: %v\n", err)
-		return
+
+	// Ingestion only runs when the workflow supplied a feedback file; absent
+	// one, we still build a suppressor from whatever the store already holds.
+	if cfg.FeedbackPath != "" {
+		added, err := learn.Ingest(ctx, store, emb, cfg.FeedbackPath, time.Now().UTC().Format(time.RFC3339))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[ocr] learnings: ingest: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "[ocr] learnings: ingested %d new feedback item(s); store now has %d\n", added, store.Len())
+		}
 	}
-	fmt.Fprintf(os.Stderr, "[ocr] learnings: ingested %d new feedback item(s); store now has %d\n", added, store.Len())
+	return newReflagSuppressor(true, emb, store)
 }

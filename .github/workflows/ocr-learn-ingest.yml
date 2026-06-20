@@ -1,0 +1,69 @@
+# OpenCodeReview - Learnings Ingest (decoupled from review)
+#
+# Fixes the collector timing flaw: the review-time collector only sees thread
+# state that exists *before* the review runs, so manual resolves / disagreements
+# that happen afterward are never captured. This workflow runs at the reliable
+# capture points — when a PR closes and when a review thread is resolved — to
+# record final verdicts via `ocr learn ingest` (no review, cheap).
+#
+# Self-hosted macOS runner with a prebuilt `ocr` at ~/.local/bin/ocr.
+
+name: OpenCodeReview Learnings Ingest
+
+on:
+  pull_request:
+    types: [closed]
+  pull_request_review_thread:
+    types: [resolved, unresolved]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Serialize with the review workflow's runner; never cancel an in-flight ingest.
+concurrency:
+  group: ocr-review
+  cancel-in-progress: false
+
+jobs:
+  learn-ingest:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up PATH for ocr
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+      - name: Collect final thread verdicts (learnings)
+        id: collect-feedback
+        uses: actions/github-script@v7
+        env:
+          OCR_BOT_LOGIN: ${{ vars.OCR_BOT_LOGIN || 'github-actions[bot]' }}
+          OCR_FEEDBACK_REJECT_AGE_DAYS: ${{ vars.OCR_FEEDBACK_REJECT_AGE_DAYS || '3' }}
+          OCR_FEEDBACK_PATH: /tmp/ocr-feedback.json
+          OCR_PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const { collectFeedback } = require(
+              `${process.env.GITHUB_WORKSPACE}/scripts/github-actions/collect-feedback.js`);
+            const { items } = await collectFeedback({ github, context, core, fs, env: process.env });
+            if (items.length === 0) core.info('No verdicted feedback to ingest.');
+
+      - name: Ingest into the learnings store
+        env:
+          # Endpoint resolution supplies the token used for embedding calls.
+          OCR_LLM_PROTOCOL: anthropic
+          OCR_LLM_URL: ${{ vars.OCR_LLM_URL }}
+          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
+          OCR_LLM_MODEL: ${{ vars.OCR_LLM_MODEL }}
+          OCR_EMBED_URL: ${{ vars.OCR_EMBED_URL }}
+          OCR_EMBED_MODEL: ${{ vars.OCR_EMBED_MODEL }}
+          OCR_LEARNINGS: on
+        run: |
+          ocr learn ingest --feedback /tmp/ocr-feedback.json || true
