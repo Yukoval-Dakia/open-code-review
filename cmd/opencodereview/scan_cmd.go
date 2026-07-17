@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/open-code-review/open-code-review/internal/scan"
 	"github.com/open-code-review/open-code-review/internal/telemetry"
 	"github.com/open-code-review/open-code-review/internal/tool"
+
+	"go.opentelemetry.io/otel/codes"
 )
 
 // scanOptions mirrors reviewOptions for the full-scan subcommand. The two
@@ -205,13 +208,24 @@ func runScan(args []string) error {
 	q := newQuietHandle(opts.outputFormat, opts.audience)
 	defer q.Restore()
 
-	ctx, span := telemetry.StartSpan(context.Background(), "scan.run")
+	ctx, span := telemetry.StartSpan(telemetry.ContextWithTraceParentFromEnv(context.Background()), "scan.run")
 	defer span.End()
+	var traceID string
+	if telemetry.IsEnabled() {
+		traceID = telemetry.TraceIDFromContext(ctx)
+		if opts.outputFormat != "json" {
+			fmt.Fprintf(os.Stderr, "[ocr] TraceID: %s\n", traceID)
+		}
+	}
 	startTime := time.Now()
 
 	comments, err := ag.Run(ctx)
 	if err != nil {
-		telemetry.SetAttr(span, "error", err.Error())
+		span.SetStatus(codes.Error, err.Error())
+		span.RecordError(err)
+		if id := ag.SessionID(); id != "" {
+			fmt.Fprintf(os.Stderr, "[ocr] Session: %s\n", id)
+		}
 		return fmt.Errorf("scan failed: %w", err)
 	}
 

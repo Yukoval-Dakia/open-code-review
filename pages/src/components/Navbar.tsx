@@ -18,6 +18,7 @@ const navTabs = [
   { path: '/benchmark', labelKey: 'navbar.benchmark' },
   { path: '/quickstart', labelKey: 'navbar.quickstart' },
   { path: '/docs', labelKey: 'navbar.docs' },
+  { path: '/blog', labelKey: 'navbar.blog' },
 ];
 
 const Navbar: React.FC = () => {
@@ -79,7 +80,7 @@ const Navbar: React.FC = () => {
         {!isMobile && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             {navTabs.map((tab) => {
-              const isActive = currentPath === tab.path;
+              const isActive = tab.path === '/' ? currentPath === '/' : currentPath.startsWith(tab.path);
               return (
                 <button
                   key={tab.path}
@@ -187,7 +188,7 @@ const Navbar: React.FC = () => {
             rel="noopener noreferrer"
             style={{ display: 'flex', alignItems: 'center', opacity: 0.6 }}
           >
-            <img src={socialIcon} alt="Social" style={{ width: 20, height: 20 }} />
+            <img src={socialIcon} alt="Social" style={{ width: 22, height: 22 }} />
           </a>
           <button
             onClick={() => navigate('/quickstart')}

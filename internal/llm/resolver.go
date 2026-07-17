@@ -17,7 +17,7 @@ type ResolvedEndpoint struct {
 	URL          string
 	Token        string
 	Model        string
-	Protocol     string            // "anthropic", "openai", "codex", or "claude"
+	Protocol     string            // canonical protocol (see protocol.go); resolver normalizes aliases
 	AuthHeader   string            // Anthropic auth header: "x-api-key" or "authorization"
 	Source       string            // human-readable config source label
 	ExtraBody    map[string]any    // vendor-specific request body fields
@@ -36,13 +36,16 @@ const (
 	envOCRLLMModel        = "OCR_LLM_MODEL"
 	envOCRLLMAuthHeader   = "OCR_LLM_AUTH_HEADER"
 	envOCRLLMExtraHeaders = "OCR_LLM_EXTRA_HEADERS"
+	// envOCRLLMProtocol overrides the resolved protocol (anthropic |
+	// openai | openai-responses). Takes priority
+	// over OCR_USE_ANTHROPIC when set.
+	envOCRLLMProtocol = "OCR_LLM_PROTOCOL"
 	// envOCRLLMTimeout is a global override applied in ResolveEndpointWithModelOverride
 	// after any strategy resolves, rather than inside tryOCREnv like other OCR_LLM_* vars.
 	// This lets it override timeout for all resolution paths (OCR env, config file,
 	// provider config, Claude Code env, shell RC).
 	envOCRLLMTimeout    = "OCR_LLM_TIMEOUT"
 	envOCRUseAnthropic  = "OCR_USE_ANTHROPIC"
-	envOCRLLMProtocol   = "OCR_LLM_PROTOCOL"
 	envOCRCodexRuntime  = "OCR_CODEX_RUNTIME"
 	envOCRClaudeRuntime = "OCR_CLAUDE_RUNTIME"
 )
@@ -106,6 +109,22 @@ func ResolveEndpointWithModelOverride(configPath, modelOverride string) (Resolve
 			if ok {
 				ep.Timeout = envTimeout
 			}
+			// OCR_LLM_EXTRA_HEADERS is a global override: merges into
+			// extra headers regardless of which strategy resolved the
+			// endpoint. Env values take precedence over config-file values.
+			if raw := os.Getenv(envOCRLLMExtraHeaders); raw != "" {
+				envHeaders, err := ParseExtraHeaders(raw)
+				if err != nil {
+					return ResolvedEndpoint{}, fmt.Errorf("resolve %s: %w", s.name, err)
+				}
+				if ep.ExtraHeaders == nil {
+					ep.ExtraHeaders = envHeaders
+				} else {
+					for k, v := range envHeaders {
+						ep.ExtraHeaders[k] = v
+					}
+				}
+			}
 			return ep, nil
 		}
 	}
@@ -114,7 +133,7 @@ func ResolveEndpointWithModelOverride(configPath, modelOverride string) (Resolve
 }
 
 func endpointComplete(ep ResolvedEndpoint) bool {
-	if ep.Protocol == "codex" || ep.Protocol == "claude" {
+	if ep.Protocol == ProtocolCodex || ep.Protocol == ProtocolClaude {
 		return true
 	}
 	return ep.URL != "" && ep.Token != "" && ep.Model != ""
@@ -162,26 +181,29 @@ func tryOCREnv(modelOverride string) (ResolvedEndpoint, bool, error) {
 	url := os.Getenv(envOCRLLMURL)
 	token := os.Getenv(envOCRLLMToken)
 	model := os.Getenv(envOCRLLMModel)
-	protocol, err := normalizeProtocol(os.Getenv(envOCRLLMProtocol))
-	if err != nil {
-		return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRLLMProtocol, err)
+	protocol := ""
+	if raw := strings.TrimSpace(os.Getenv(envOCRLLMProtocol)); raw != "" {
+		protocol = NormalizeProtocol(raw)
+		if err := ValidateProtocol(protocol); err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRLLMProtocol, err)
+		}
 	}
 	if modelOverride != "" {
 		model = modelOverride
 	}
-	if protocol == "codex" {
+	if protocol == ProtocolCodex {
 		extra, err := codexRuntimeExtraBody(os.Getenv(envOCRCodexRuntime), nil)
 		if err != nil {
 			return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRCodexRuntime, err)
 		}
-		return ResolvedEndpoint{Model: model, Protocol: "codex", Source: "OCR environment", ExtraBody: extra}, true, nil
+		return ResolvedEndpoint{Model: model, Protocol: ProtocolCodex, Source: "OCR environment", ExtraBody: extra}, true, nil
 	}
-	if protocol == "claude" {
+	if protocol == ProtocolClaude {
 		extra, err := claudeRuntimeExtraBody(os.Getenv(envOCRClaudeRuntime), nil)
 		if err != nil {
 			return ResolvedEndpoint{}, false, fmt.Errorf("%s: %w", envOCRClaudeRuntime, err)
 		}
-		return ResolvedEndpoint{Model: model, Protocol: "claude", Source: "OCR environment", ExtraBody: extra}, true, nil
+		return ResolvedEndpoint{Model: model, Protocol: ProtocolClaude, Source: "OCR environment", ExtraBody: extra}, true, nil
 	}
 	if url == "" || token == "" || model == "" {
 		// An explicit API protocol is an override request that cannot be
@@ -194,21 +216,23 @@ func tryOCREnv(modelOverride string) (ResolvedEndpoint, bool, error) {
 		return ResolvedEndpoint{}, false, nil
 	}
 
-	// An explicit protocol wins over the legacy use_anthropic toggle.
+	// OCR_LLM_PROTOCOL (normalized and validated at the top of this function)
+	// wins over OCR_USE_ANTHROPIC when set.
 	if protocol == "" {
 		useAnthropic := true // default true
 		if v := os.Getenv(envOCRUseAnthropic); v != "" {
 			lower := strings.ToLower(v)
 			useAnthropic = lower == "true" || lower == "1" || lower == "yes"
 		}
-		protocol = "anthropic"
-		if !useAnthropic {
-			protocol = "openai"
+		if useAnthropic {
+			protocol = ProtocolAnthropic
+		} else {
+			protocol = ProtocolOpenAIChatCompletions
 		}
 	}
 
 	var authHeader string
-	if protocol == "anthropic" {
+	if protocol == ProtocolAnthropic {
 		var err error
 		authHeader, err = NormalizeAuthHeader(os.Getenv(envOCRLLMAuthHeader))
 		if err != nil {
@@ -219,28 +243,7 @@ func tryOCREnv(modelOverride string) (ResolvedEndpoint, bool, error) {
 		}
 	}
 
-	var extraHeaders map[string]string
-	if extraHeadersRaw := os.Getenv(envOCRLLMExtraHeaders); extraHeadersRaw != "" {
-		var err error
-		extraHeaders, err = ParseExtraHeaders(extraHeadersRaw)
-		if err != nil {
-			return ResolvedEndpoint{}, false, fmt.Errorf("OCR environment: %w", err)
-		}
-	}
-
-	return ResolvedEndpoint{URL: url, Token: token, Model: model, Protocol: protocol, AuthHeader: authHeader, Source: "OCR environment", ExtraHeaders: extraHeaders}, true, nil
-}
-
-// normalizeProtocol validates an explicit protocol selection. Empty means
-// "not set" (fall back to legacy use_anthropic semantics).
-func normalizeProtocol(raw string) (string, error) {
-	protocol := strings.ToLower(strings.TrimSpace(raw))
-	switch protocol {
-	case "", "anthropic", "openai", "codex", "claude":
-		return protocol, nil
-	default:
-		return "", fmt.Errorf("invalid protocol %q: must be 'anthropic', 'openai', 'codex', or 'claude'", raw)
-	}
+	return ResolvedEndpoint{URL: url, Token: token, Model: model, Protocol: protocol, AuthHeader: authHeader, Source: "OCR environment"}, true, nil
 }
 
 // llmFileConfig represents the llm section in config.json.
@@ -249,10 +252,10 @@ type llmFileConfig struct {
 	AuthToken     string            `json:"auth_token,omitempty"`
 	AuthHeader    string            `json:"auth_header,omitempty"`
 	Model         string            `json:"model,omitempty"`
-	Protocol      string            `json:"protocol,omitempty"`
+	Protocol      string            `json:"protocol,omitempty"` // anthropic|openai|openai-responses|codex|claude; takes priority over use_anthropic
 	CodexRuntime  string            `json:"codex_runtime,omitempty"`
 	ClaudeRuntime string            `json:"claude_runtime,omitempty"`
-	UseAnthropic  *bool             `json:"use_anthropic,omitempty"` // pointer to distinguish unset from false
+	UseAnthropic  *bool             `json:"use_anthropic,omitempty"` // pointer to distinguish unset from false; legacy fallback when protocol is empty
 	TimeoutSec    int               `json:"timeout_sec,omitempty"`   // per-request HTTP timeout in seconds
 	ExtraBody     map[string]any    `json:"extra_body,omitempty"`
 	ExtraHeaders  map[string]string `json:"extra_headers,omitempty"`
@@ -335,24 +338,32 @@ func tryProviderConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, 
 
 	if isPreset {
 		url = preset.BaseURL
-		protocol = preset.Protocol
+		protocol = NormalizeProtocol(preset.Protocol)
+		if err := ValidateProtocol(protocol); err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("provider %q: %w", cfg.Provider, err)
+		}
 		authHeader = preset.AuthHeader
 		if entry.URL != "" {
 			url = entry.URL
 		}
 		if entry.Protocol != "" {
-			protocol = strings.ToLower(entry.Protocol)
+			normalized := NormalizeProtocol(entry.Protocol)
+			if err := ValidateProtocol(normalized); err != nil {
+				return ResolvedEndpoint{}, false, fmt.Errorf("provider %q: %w", cfg.Provider, err)
+			}
+			protocol = normalized
 		}
 	} else {
 		// Custom provider: url and protocol are required; model can come from cfg.Model.
 		if entry.URL == "" || entry.Protocol == "" {
 			return ResolvedEndpoint{}, false, fmt.Errorf("custom provider %q requires url and protocol fields", cfg.Provider)
 		}
-		if !strings.EqualFold(entry.Protocol, "anthropic") && !strings.EqualFold(entry.Protocol, "openai") {
-			return ResolvedEndpoint{}, false, fmt.Errorf("custom provider %q has invalid protocol %q: must be \"anthropic\" or \"openai\"", cfg.Provider, entry.Protocol)
+		normalized := NormalizeProtocol(entry.Protocol)
+		if err := ValidateProtocol(normalized); err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("custom provider %q: %w", cfg.Provider, err)
 		}
 		url = entry.URL
-		protocol = strings.ToLower(entry.Protocol)
+		protocol = normalized
 	}
 
 	if cfg.Model != "" {
@@ -372,7 +383,7 @@ func tryProviderConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, 
 	// Apply model override with validation.
 	if modelOverride != "" {
 		if len(availableModels) > 0 {
-			if !modelListContains(availableModels, modelOverride) {
+			if !ModelListContains(availableModels, modelOverride) {
 				return ResolvedEndpoint{}, false, fmt.Errorf(
 					"model %q is not available for provider %q; available models: %s",
 					modelOverride,
@@ -388,7 +399,7 @@ func tryProviderConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, 
 		return ResolvedEndpoint{}, false, fmt.Errorf("provider %q has no model configured; run 'ocr config model' to select one or pass --model", cfg.Provider)
 	}
 
-	if protocol == "anthropic" {
+	if protocol == ProtocolAnthropic {
 		var err error
 		ah := "authorization"
 		if isPreset && authHeader != "" {
@@ -416,7 +427,7 @@ func tryProviderConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, 
 		return ResolvedEndpoint{}, false, fmt.Errorf("provider %q: %w", cfg.Provider, err)
 	}
 
-	if protocol == "anthropic" {
+	if protocol == ProtocolAnthropic {
 		url = ensureMessagesSuffix(url)
 	}
 
@@ -436,9 +447,12 @@ func tryProviderConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, 
 // tryLegacyLlmConfig resolves an endpoint from the legacy llm config block,
 // including the codex/claude CLI protocols.
 func tryLegacyLlmConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, bool, error) {
-	protocol, err := normalizeProtocol(cfg.Llm.Protocol)
-	if err != nil {
-		return ResolvedEndpoint{}, false, fmt.Errorf("llm.protocol: %w", err)
+	protocol := ""
+	if raw := strings.TrimSpace(cfg.Llm.Protocol); raw != "" {
+		protocol = NormalizeProtocol(raw)
+		if err := ValidateProtocol(protocol); err != nil {
+			return ResolvedEndpoint{}, false, fmt.Errorf("llm.protocol: %w", err)
+		}
 	}
 
 	model := cfg.Llm.Model
@@ -446,19 +460,19 @@ func tryLegacyLlmConfig(cfg configFile, modelOverride string) (ResolvedEndpoint,
 		model = modelOverride
 	}
 
-	if protocol == "codex" {
+	if protocol == ProtocolCodex {
 		extra, err := codexRuntimeExtraBody(cfg.Llm.CodexRuntime, cfg.Llm.ExtraBody)
 		if err != nil {
 			return ResolvedEndpoint{}, false, fmt.Errorf("llm.codex_runtime: %w", err)
 		}
-		return ResolvedEndpoint{Model: model, Protocol: "codex", Source: "OCR config file", ExtraBody: extra}, true, nil
+		return ResolvedEndpoint{Model: model, Protocol: ProtocolCodex, Source: "OCR config file", ExtraBody: extra}, true, nil
 	}
-	if protocol == "claude" {
+	if protocol == ProtocolClaude {
 		extra, err := claudeRuntimeExtraBody(cfg.Llm.ClaudeRuntime, cfg.Llm.ExtraBody)
 		if err != nil {
 			return ResolvedEndpoint{}, false, fmt.Errorf("llm.claude_runtime: %w", err)
 		}
-		return ResolvedEndpoint{Model: model, Protocol: "claude", Source: "OCR config file", ExtraBody: extra}, true, nil
+		return ResolvedEndpoint{Model: model, Protocol: ProtocolClaude, Source: "OCR config file", ExtraBody: extra}, true, nil
 	}
 
 	if cfg.Llm.URL == "" || cfg.Llm.AuthToken == "" || model == "" {
@@ -472,20 +486,23 @@ func tryLegacyLlmConfig(cfg configFile, modelOverride string) (ResolvedEndpoint,
 		return ResolvedEndpoint{}, false, nil
 	}
 
-	// An explicit protocol wins over the legacy use_anthropic toggle.
+	// llm.protocol (normalized and validated at the top of this function)
+	// wins over use_anthropic when set.
 	if protocol == "" {
 		useAnthropic := true // default true
 		if cfg.Llm.UseAnthropic != nil {
 			useAnthropic = *cfg.Llm.UseAnthropic
 		}
-		protocol = "anthropic"
-		if !useAnthropic {
-			protocol = "openai"
+		if useAnthropic {
+			protocol = ProtocolAnthropic
+		} else {
+			protocol = ProtocolOpenAIChatCompletions
 		}
 	}
 
 	var authHeader string
-	if protocol == "anthropic" {
+	if protocol == ProtocolAnthropic {
+		var err error
 		authHeader, err = NormalizeAuthHeader(cfg.Llm.AuthHeader)
 		if err != nil {
 			return ResolvedEndpoint{}, false, fmt.Errorf("OCR config file: %w", err)
@@ -582,7 +599,7 @@ func tryCCEnv(modelOverride string) (ResolvedEndpoint, bool, error) {
 	url := ensureMessagesSuffix(baseURL)
 
 	// Claude Code environment tokens are OAuth/Bearer-style credentials.
-	return ResolvedEndpoint{URL: url, Token: token, Model: model, Protocol: "anthropic", AuthHeader: "authorization", Source: "Claude Code environment"}, true, nil
+	return ResolvedEndpoint{URL: url, Token: token, Model: model, Protocol: ProtocolAnthropic, AuthHeader: "authorization", Source: "Claude Code environment"}, true, nil
 }
 
 // tryShellRC parses ~/.zshrc and ~/.bashrc for ANTHROPIC_* exports.
@@ -668,19 +685,19 @@ func parseShellRC(path, modelOverride string) (ResolvedEndpoint, bool, error) {
 	url := ensureMessagesSuffix(baseURL)
 
 	// Claude Code shell rc tokens are OAuth/Bearer-style credentials.
-	return ResolvedEndpoint{URL: url, Token: token, Model: model, Protocol: "anthropic", AuthHeader: "authorization", Source: "Shell rc file"}, true, nil
+	return ResolvedEndpoint{URL: url, Token: token, Model: model, Protocol: ProtocolAnthropic, AuthHeader: "authorization", Source: "Shell rc file"}, true, nil
 }
 
 func defaultAuthHeader(protocol string) string {
 	// auth_header is Anthropic-only; OpenAI-compatible clients keep API key auth.
-	if protocol == "anthropic" {
+	if protocol == ProtocolAnthropic {
 		return "authorization"
 	}
 	return ""
 }
 
-// modelListContains checks if a model exists in the available models list.
-func modelListContains(models []string, target string) bool {
+// ModelListContains reports whether target matches any entry in models (trimmed).
+func ModelListContains(models []string, target string) bool {
 	target = strings.TrimSpace(target)
 	for _, model := range models {
 		if strings.TrimSpace(model) == target {

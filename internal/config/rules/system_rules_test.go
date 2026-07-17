@@ -59,6 +59,10 @@ func TestResolve_DefaultRules(t *testing.T) {
 	}{
 		{"src/main/java/com/example/foo.java", "Logic Error Detection"},
 		{"foo.java", "Logic Error Detection"},
+		{"src/main/resources/templates/email.ftl", "Template Injection"},
+		{"foo.ftl", "Template Injection"},
+		{"foo.ftlh", "Template Injection"},
+		{"foo.ftlx", "Template Injection"},
 		{"src/main/resources/mapper/usermapper.xml", "SQL Logic Error Detection"},
 		{"src/main/resources/dao/userdao.xml", "SQL Logic Error Detection"},
 		{"pom.xml", "snapshot"},
@@ -67,6 +71,7 @@ func TestResolve_DefaultRules(t *testing.T) {
 		{"frontend/package.json", "latest"},
 		{"config/app.yaml", "yaml-key"},
 		{"deploy/values.yml", "yaml-key"},
+		{"src/pages/index.astro", "client:*"},
 		{"src/components/app.tsx", "React"},
 		{"lib/utils.ts", "TypeScript"},
 		{"app.kt", "Null Safety"},
@@ -79,6 +84,8 @@ func TestResolve_DefaultRules(t *testing.T) {
 		{"src/lib.rs", "Ownership and Lifetime Correctness"},
 		{"crates/service/src/main.rs", "Unsafe Code Boundaries"},
 		{"crates/service/Cargo.toml", "Cargo Manifest Hygiene"},
+		{"scripts/deploy.py", "Mutable Default Arguments"},
+		{"src/app/main.py", "Mutable Default Arguments"},
 	}
 
 	for _, tt := range tests {
@@ -103,7 +110,6 @@ func TestResolve_FallbackToDefault(t *testing.T) {
 		"docs/architecture.txt",
 		"Makefile",
 		"internal/agent/agent.go",
-		"scripts/deploy.py",
 		"ios/ViewController.m",
 	}
 
@@ -157,12 +163,23 @@ func TestResolve_CaseInsensitive(t *testing.T) {
 	rule := &SystemRule{
 		DefaultRule: "default",
 		PathRules: []PathRule{
+			{Pattern: "**/*.astro", Rule: "astro-rule"},
 			{Pattern: "**/*.java", Rule: "java-rule"},
 			{Pattern: "**/Cargo.toml", Rule: "cargo-rule"},
 		},
 	}
 
-	got := rule.Resolve("Foo.Java")
+	got := rule.Resolve("Foo.Astro")
+	if got != "astro-rule" {
+		t.Errorf("expected astro-rule for uppercase extension, got %q", got)
+	}
+
+	got = rule.Resolve("foo.astro")
+	if got != "astro-rule" {
+		t.Errorf("expected astro-rule for lowercase, got %q", got)
+	}
+
+	got = rule.Resolve("Foo.Java")
 	if got != "java-rule" {
 		t.Errorf("expected java-rule for uppercase extension, got %q", got)
 	}

@@ -13,7 +13,6 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@alibaba-group/open-code-review"><img alt="npm" src="https://img.shields.io/npm/v/@alibaba-group/open-code-review?style=flat-square" /></a>
   <a href="https://github.com/alibaba/open-code-review/actions/workflows/release.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/alibaba/open-code-review/release.yml?style=flat-square" /></a>
-  <a href="https://goreportcard.com/report/github.com/alibaba/open-code-review"><img alt="Go Report Card" src="https://goreportcard.com/badge/github.com/alibaba/open-code-review?style=flat-square" /></a>
   <a href="https://github.com/alibaba/open-code-review/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/alibaba/open-code-review?style=flat-square" /></a>
   <a href="https://deepwiki.com/alibaba/open-code-review"><img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg" /></a>
   <a href="https://www.bestpractices.dev/projects/13328"><img alt="OpenSSF Best Practices" src="https://img.shields.io/badge/OpenSSF-Silver-4C566A?style=flat-square" /></a>
@@ -92,6 +91,10 @@ agent의 강점은 동적 판단과 동적 context 검색이 중요한 지점에
 
 ## 사용 방법
 
+### 사전 요구 사항
+
+- **Git >= 2.41** — Open Code Review는 diff 생성, 코드 검색, 저장소 작업에 Git을 사용합니다.
+
 ### CLI
 
 #### 설치
@@ -103,6 +106,18 @@ npm install -g @alibaba-group/open-code-review
 ```
 
 설치 후 `ocr` 명령을 전역에서 사용할 수 있습니다.
+
+**업데이트**
+
+NPM으로 설치했다면 최신 버전으로 수동 업데이트할 수 있습니다:
+
+```bash
+npm install -g @alibaba-group/open-code-review@latest
+```
+
+NPM 설치의 `ocr`은 기본적으로 백그라운드에서 새 버전을 확인하고 자동으로 업데이트합니다. 자동 업데이트를 끄려면 `OCR_NO_UPDATE=1`을 설정하세요.
+
+설치 스크립트나 수동 다운로드한 binary로 설치했다면 같은 설치/다운로드 명령을 다시 실행해 로컬 binary를 최신 release로 교체할 수 있습니다. 특정 release tag로 고정해야 한다면 `OCR_VERSION`을 사용하세요.
 
 **GitHub Release 사용**
 
@@ -117,6 +132,32 @@ curl -fsSL https://raw.githubusercontent.com/alibaba/open-code-review/main/insta
 ```bash
 OCR_INSTALL_DIR="$HOME/.local/bin" OCR_VERSION=v1.3.13 \
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/alibaba/open-code-review/main/install.sh)"
+```
+
+Windows (PowerShell 5.1+)에서는:
+
+```powershell
+irm https://raw.githubusercontent.com/alibaba/open-code-review/main/install.ps1 | iex
+```
+
+이 스크립트는 알맞은 Windows 릴리스 binary를 선택하고 SHA-256 체크섬을 검증한 뒤 `ocr.exe`로 `%LOCALAPPDATA%\Programs\ocr`에 설치합니다. 설치 위치는 `OCR_INSTALL_DIR`로, 릴리스 버전은 `OCR_VERSION`으로 재정의할 수 있습니다:
+
+```powershell
+$env:OCR_INSTALL_DIR = "$env:USERPROFILE\bin"
+$env:OCR_VERSION = "v1.3.13"
+irm https://raw.githubusercontent.com/alibaba/open-code-review/main/install.ps1 | iex
+```
+
+원격 스크립트를 셸로 바로 파이프하면 인터넷의 코드가 실행됩니다. 먼저 다운로드해 내용을 확인한 뒤 실행하는 방식을 권장합니다:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alibaba/open-code-review/main/install.sh -o install.sh
+less install.sh && sh install.sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/alibaba/open-code-review/main/install.ps1 -OutFile install.ps1
+notepad install.ps1   # 확인 후: .\install.ps1
 ```
 
 <details>
@@ -204,7 +245,7 @@ ocr config set custom_providers.my-gateway.api_key your-api-key-here
 ocr config set custom_providers.my-gateway.model gpt-4o
 ```
 
-> 커스텀 provider에서는 `url`과 `protocol`이 필수입니다. 지원 프로토콜: `anthropic`, `openai`.
+> 커스텀 provider에서는 `url`과 `protocol`이 필수입니다. 지원 프로토콜: `anthropic`, `openai`, `openai-responses`
 
 선택 설정:
 
@@ -238,6 +279,17 @@ export OCR_LLM_MODEL=claude-opus-4-6
 export OCR_USE_ANTHROPIC=true
 ```
 
+OpenAI Responses API(GPT-5.x / o-시리즈 모델)를 사용하려면 `OCR_USE_ANTHROPIC` 대신 `OCR_LLM_PROTOCOL`을 사용하세요:
+
+```bash
+export OCR_LLM_URL=https://api.openai.com/v1
+export OCR_LLM_TOKEN=your-openai-key
+export OCR_LLM_MODEL=gpt-5.4
+export OCR_LLM_PROTOCOL=openai-responses
+```
+
+`OCR_LLM_PROTOCOL`은 `anthropic`, `openai`, `openai-responses`를 허용하며, `OCR_USE_ANTHROPIC`과 함께 설정하면 우선 적용됩니다.
+
 Claude Code 환경 변수(`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`)와도 호환되며, `~/.zshrc` / `~/.bashrc`의 export도 파싱합니다.
 
 > **CC-Switch 사용자 참고**: [CC-Switch](https://github.com/farion1231/cc-switch)를 [routing service](https://www.ccswitch.io/en/docs?section=proxy&item=service)와 함께 사용한다면, provider의 `url`을 CC-Switch proxy 주소로 지정하여 추가 설정 없이 사용할 수 있습니다:
@@ -265,9 +317,18 @@ ocr review --from main --to feature-branch
 # 단일 commit
 ocr review --commit abc123
 
+# 중단된 range 또는 단일 commit review 재개
+ocr session list
+ocr review --from main --to feature-branch --resume <session-id>
+
 # 전체 파일 스캔 — diff 대신 파일 전체를 리뷰 (git 이력 불필요)
 ocr scan                          # 전체 repository 스캔
 ocr scan --path internal/agent    # 디렉터리 또는 특정 파일 스캔
+
+# 위임 모드 — AI 코딩 에이전트가 직접 리뷰 수행
+# OCR은 파일 선택과 규칙 해석만 담당; LLM 설정 불필요
+ocr delegate preview
+ocr delegate rule src/main.go src/handler.go
 ```
 
 ### Coding Agent와 통합
@@ -284,6 +345,14 @@ npx skills add alibaba/open-code-review --skill open-code-review
 
 이 명령은 [skills registry](skills/open-code-review/SKILL.md)의 `open-code-review` skill을 설치합니다. 이 skill은 coding agent가 `ocr`을 호출해 코드 리뷰를 수행하고, issue를 우선순위별로 분류하며, 필요한 경우 fix를 적용하는 방법을 알려줍니다.
 
+**위임 모드** — 코딩 에이전트가 직접 리뷰를 수행하길 원하는 경우 (OCR은 파일 선택과 규칙 해석만 담당, OCR 측 LLM 설정 불필요):
+
+```bash
+npx skills add alibaba/open-code-review --skill open-code-review-delegate
+```
+
+자세한 내용은 [skills/open-code-review-delegate/SKILL.md](skills/open-code-review-delegate/SKILL.md)를 참조하세요.
+
 #### Option 2: Claude Code Plugin으로 설치
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)에서는 Claude Code 안에서 다음 명령으로 command plugin을 설치합니다.
@@ -293,7 +362,7 @@ npx skills add alibaba/open-code-review --skill open-code-review
 /plugin install open-code-review@open-code-review
 ```
 
-이렇게 하면 OCR을 실행하고 issue를 자동으로 필터링 및 수정하는 `/open-code-review:review` slash command가 등록됩니다.
+이렇게 하면 OCR을 실행하고 issue를 자동으로 필터링 및 수정하는 `/open-code-review:review` slash command가 등록됩니다. 또한 `/open-code-review:delegate-review` 위임 모드 명령도 제공됩니다 (에이전트가 자체 능력으로 리뷰를 수행하고, OCR은 파일 선택과 규칙 해석을 담당).
 
 #### Option 3: Codex Plugin으로 설치
 
@@ -372,7 +441,7 @@ package manager 없이 빠르게 설정하려면 command 파일을 복사해 Cla
 ```bash
 mkdir -p .claude/commands
 curl -o .claude/commands/open-code-review.md \
-  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/commands/review.md
+  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/claude-code/commands/review.md
 ```
 
 **User-level**(여러 프로젝트에서 개인 전역 사용):
@@ -380,10 +449,24 @@ curl -o .claude/commands/open-code-review.md \
 ```bash
 mkdir -p ~/.claude/commands
 curl -o ~/.claude/commands/open-code-review.md \
-  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/commands/review.md
+  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/claude-code/commands/review.md
 ```
 
-> **전제 조건**: 모든 통합 방식은 `ocr` CLI가 설치되어 있고 LLM이 설정되어 있어야 합니다. 위의 [설치](#설치)와 [LLM 설정](#1-llm-설정)을 참고하세요.
+위임 모드 (OCR 측 LLM 설정 불필요):
+
+```bash
+# 프로젝트 수준
+mkdir -p .claude/commands
+curl -o .claude/commands/open-code-review-delegate.md \
+  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/claude-code/commands/delegate-review.md
+
+# 사용자 수준
+mkdir -p ~/.claude/commands
+curl -o ~/.claude/commands/open-code-review-delegate.md \
+  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/claude-code/commands/delegate-review.md
+```
+
+> **전제 조건**: 모든 통합 방식은 `ocr` CLI 설치가 필요합니다. 표준 모드는 추가로 LLM 설정이 필요합니다 — 위의 [설치](#설치) 및 [LLM 설정](#1-llm-설정)을 참조하세요. 위임 모드는 OCR 측 LLM 설정이 **필요 없습니다**.
 
 ### CI/CD 통합
 
@@ -400,11 +483,35 @@ ocr review \
 
 `--format json` flag는 CI script에서 파싱하기 좋은 machine-readable 결과를 출력합니다.
 
+각 finding에는 두 개의 구조화된 field가 포함되어, CI 통합에서 comment 텍스트를 다시 파싱하지 않고도 정렬·그룹화·필터링하거나 build를 gate할 수 있습니다:
+
+| Field | 허용 값 | 설명 |
+|-------|--------|------|
+| `category` | `bug`, `security`, `performance`, `maintainability`, `test`, `style`, `documentation`, `other` | 이슈가 속한 카테고리. |
+| `severity` | `critical`, `high`, `medium`, `low` | 이슈의 중요도. |
+
+JSON 출력에서 두 field는 `content`, `start_line` 등과 같은 수준의 sibling으로 나타납니다. 터미널에서는 comment 앞에 인라인 `[category · severity]` badge로 표시되며 severity에 따라 색상이 지정됩니다.
+
 통합 예시는 [`examples/`](./examples/) 디렉터리를 참고하세요.
 
 - [`github_actions/`](./examples/github_actions/): GitHub Actions 통합 예시
 - [`gitlab_ci/`](./examples/gitlab_ci/): GitLab CI 통합 예시
 - [`gitflic_ci/`](./examples/gitflic_ci/): GitFlic CI 통합 예시
+
+#### GitHub Action
+
+GitHub의 경우, 이 리포지터리는 루트에 바로 사용할 수 있는 composite Action([`action.yml`](./action.yml))을 제공합니다. 직접 `ocr review` 스크립트를 작성하는 대신 이를 참조하기만 하면 전체 파이프라인 — checkout, OCR 설치, review 실행, inline/summary comment 게시, artifact 업로드, 재시도 및 멱등성 — 을 모두 처리합니다:
+
+```yaml
+- uses: alibaba/open-code-review@main
+  with:
+    llm_url: ${{ secrets.OCR_LLM_URL }}
+    llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+    llm_model: ${{ vars.OCR_LLM_MODEL }}
+    llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC }}
+```
+
+재현성을 위해 version tag나 commit SHA에 고정하세요. 전체 workflow 데모와 inputs/outputs, comment 게시 모드(sticky summary, incremental non-destructive posting)의 전체 목록은 [`examples/github_actions/`](./examples/github_actions/) 디렉터리를 참고하세요.
 
 ## Commands
 
@@ -412,6 +519,8 @@ ocr review \
 |---------|-------|-------------|
 | `ocr review` | `ocr r` | diff 기반 코드 리뷰 시작 |
 | `ocr scan` | `ocr s` | 전체 파일 리뷰 (diff 불필요) |
+| `ocr delegate preview` | `ocr d preview` | 리뷰 대상 파일 목록을 모드/참조 메타데이터와 함께 출력 (LLM 불필요) |
+| `ocr delegate rule <path...>` | `ocr d rule` | 내용별로 그룹화된 리뷰 규칙 출력 (LLM 불필요) |
 | `ocr rules check <file>` | - | 파일 경로에 적용될 리뷰 rule 미리보기 |
 | `ocr config provider` | - | 대화형 provider 설정 (built-in, custom, 수동) |
 | `ocr config model` | - | 활성 provider의 대화형 model 선택 |
@@ -419,6 +528,8 @@ ocr review \
 | `ocr config unset custom_providers.<name>` | - | custom provider 삭제 |
 | `ocr llm test` | - | LLM 연결 테스트 |
 | `ocr llm providers` | - | built-in LLM provider 목록 표시 |
+| `ocr session list` | `ocr sessions list`, `ocr session ls` | 저장된 review session 목록 표시 |
+| `ocr session show <id>` | `ocr sessions show <id>` | 단일 session과 파일별 checkpoint 확인 |
 | `ocr viewer` | `ocr v` | `localhost:5483`에서 WebUI session viewer 실행 |
 | `ocr version` | - | version 정보 표시 |
 
@@ -432,16 +543,53 @@ ocr review \
 | `--commit` | `-c` | - | 리뷰할 단일 commit |
 | `--exclude` | - | - | 건너뛸 파일의 쉼표 구분 gitignore 스타일 패턴; rule.json의 excludes와 병합 |
 | `--preview` | `-p` | `false` | LLM 실행 없이 리뷰 대상 파일 미리보기 |
+| `--resume` | - | - | 이전의 호환되는 range 또는 단일 commit review session에서 재개 |
 | `--format` | `-f` | `text` | Output format: `text` 또는 `json` |
 | `--concurrency` | - | `8` | 최대 동시 파일 리뷰 수 |
 | `--timeout` | - | `10` | 동시 task timeout(분) |
 | `--audience` | - | `human` | `human`(progress 표시) 또는 `agent`(summary only) |
 | `--background` | `-b` | - | 리뷰를 위한 선택적 요구사항/비즈니스 컨텍스트. `--commit` 사용 시 미지정이면 commit message에서 자동 추출 |
+| `--background-file` | `-B` | - | Markdown 파일에서 읽어오는 선택적 요구사항/비즈니스 컨텍스트. `--background`와 함께 사용하면 inline 값이 먼저 배치됩니다 |
 | `--model` | - | - | 이번 리뷰에서 LLM model 선택 또는 override |
 | `--rule` | - | - | custom JSON review rules 경로 |
 | `--max-tools` | - | built-in | 파일별 최대 tool call round. template default보다 클 때만 적용 |
 | `--max-git-procs` | - | built-in | 최대 동시 git subprocess 수 |
 | `--tools` | - | - | custom JSON tools config 경로 |
+
+#### Resumable Reviews and Sessions
+
+모든 `ocr review` 실행은 `~/.opencodereview/sessions/` 아래에 local session log를 저장합니다.
+정상 완료된 text output은 review 결과에 집중하며 session ID를 출력하지 않습니다.
+저장된 session은 `ocr session list/show`로 찾을 수 있고, `--format json`을 사용하면
+machine-readable output에 `session_id`가 포함됩니다. range 또는 단일 commit review가 중단된 경우,
+저장된 session을 나열한 뒤 동일한 review target과 일치하는 session에서 재개합니다.
+
+```bash
+ocr session list
+ocr session show <session-id>
+ocr review --from main --to feature-branch --resume <session-id>
+ocr review --commit abc123 --resume <session-id>
+```
+
+Resume은 의도적으로 엄격합니다. branch range와 단일 commit review만 지원하고 workspace review는 지원하지 않습니다.
+현재 `--from/--to` 또는 `--commit`은 저장된 session과 일치해야 합니다. `--preview`와 `--resume`은 함께 사용할 수 없습니다.
+
+`--format json`을 사용하면 재개된 run에는 다음 field가 포함됩니다.
+
+- `session_id`: 현재 run의 session ID
+- `resume.resumed_from`: source session ID
+- `resume.reused_files`: 저장된 checkpoint에서 재사용한 파일 수
+- `resume.rerun_files`: 현재 run에서 다시 review한 파일 수
+
+### `ocr session` Flags
+
+| Command | Flag | Default | Description |
+|---------|------|---------|-------------|
+| `ocr session list` | `--repo` | current dir | session을 나열할 repository |
+| `ocr session list` | `--json` | `false` | session summary를 JSON으로 출력 |
+| `ocr session list` | `--limit` | `20` | 나열할 session 수 제한. `0`은 unlimited |
+| `ocr session show <id>` | `--repo` | current dir | 확인할 session의 repository |
+| `ocr session show <id>` | `--json` | `false` | session metadata와 파일별 item을 JSON으로 출력 |
 
 ### `ocr scan` Flags
 
@@ -463,6 +611,31 @@ ocr review \
 | `--repo` | - | current dir | 스캔할 repository 또는 디렉터리 루트 |
 
 각 실행 전에 `ocr scan`은 대략적인 토큰 비용 추정치를 출력합니다. `--preview`로 먼저 파일 목록을 확인하고, `--max-tokens-budget`으로 대규모 repository의 비용을 제한할 수 있습니다.
+
+### `ocr delegate` 플래그
+
+`ocr delegate`는 AI 코딩 에이전트를 위한 위임 모드입니다. LLM을 호출하지 않고
+결정론적인 파일 선택과 규칙 해석을 제공합니다 — 실제 리뷰는 호스트 에이전트가
+자체 능력으로 수행합니다.
+
+| 하위 명령 | 설명 |
+|-----------|------|
+| `ocr delegate preview` | 리뷰 대상 파일 목록을 모드/참조 메타데이터와 함께 출력 |
+| `ocr delegate rule <path...>` | 내용별로 그룹화된 리뷰 규칙 출력 |
+
+두 하위 명령은 다음 플래그를 공유합니다:
+
+| 플래그 | 축약형 | 기본값 | 설명 |
+|--------|--------|--------|------|
+| `--repo` | — | 현재 디렉터리 | Git 저장소 루트 |
+| `--from` | — | — | 소스 참조 (예: `main`) |
+| `--to` | — | — | 대상 참조 (예: `feature-branch`) |
+| `--commit` | `-c` | — | 단일 커밋 |
+| `--exclude` | — | — | 쉼표로 구분된 gitignore 스타일 제외 패턴 |
+| `--rule` | — | — | 커스텀 JSON 리뷰 규칙 경로 |
+| `--background` | `-b` | — | 선택적 요구사항/비즈니스 컨텍스트 |
+| `--background-file` | `-B` | — | Markdown 파일에서 비즈니스 컨텍스트 로드 |
+| `--max-git-procs` | — | `16` | 최대 동시 git 하위 프로세스 수 |
 
 ## Examples
 
@@ -488,12 +661,24 @@ ocr review --from main --to my-feature --concurrency 4
 # 특정 commit을 verbose JSON output으로 리뷰
 ocr review --commit abc123 --format json --audience agent
 
+# 중단된 range 또는 단일 commit review 재개
+ocr session list
+ocr session show <session-id>
+ocr review --from main --to my-feature --resume <session-id>
+ocr review --commit abc123 --resume <session-id>
+
 # 이번 리뷰에서 model 선택 또는 override
 ocr review --model claude-opus-4-6
 ocr review --commit abc123 --model claude-sonnet-4-6
 
 # 요구사항 컨텍스트를 제공하여 더 정확한 리뷰 수행
 ocr review --background "로그인 API에 rate limiting 추가"
+
+# Markdown 파일에서 요구사항 컨텍스트 제공
+ocr review --background-file ./docs/my_business_context.md
+
+# inline 컨텍스트와 로컬 컨텍스트 파일을 함께 사용(둘 다 적용됨)
+ocr review --background "인증에 집중" --background-file ./docs/my_business_context.md
 
 # custom review rules 사용
 ocr review --rule /path/to/my-rules.json
@@ -516,6 +701,12 @@ ocr scan --repo /path/to/plain/dir --format json
 
 # 가장 빠른 스캔: planning, 중복 제거, 프로젝트 요약 건너뛰기
 ocr scan --no-plan --no-dedup --no-summary
+
+# 위임 모드 — AI 에이전트가 리뷰 수행 (LLM 설정 불필요)
+ocr delegate preview
+ocr delegate preview --from main --to feature-branch
+ocr delegate preview --commit abc123
+ocr delegate rule internal/handler.go internal/service.go cmd/main.go
 
 # browser에서 review session history 보기
 ocr viewer
@@ -616,7 +807,7 @@ Config file: `~/.opencodereview/config.json`
 | `provider` | string | `anthropic` \| `openai` \| `dashscope` \| `deepseek` \| `z-ai` |
 | `providers.<name>.api_key` | string | Provider별 API key |
 | `providers.<name>.url` | string | Provider base URL override |
-| `providers.<name>.protocol` | string | `anthropic` \| `openai` |
+| `providers.<name>.protocol` | string | `anthropic` \| `openai` \| `openai-responses` |
 | `providers.<name>.model` | string | Provider의 model 이름 |
 | `providers.<name>.models` | array | 대화형 선택에 사용할 optional provider model 목록 |
 | `providers.<name>.auth_header` | string | `x-api-key` \| `authorization` |
@@ -631,7 +822,8 @@ Config file: `~/.opencodereview/config.json`
 | `llm.timeout_sec` | integer | 요청당 HTTP timeout(초), 기본값 `300` |
 | `llm.extra_headers` | string | 쉼표로 구분된 `key=value` HTTP 헤더 |
 | `llm.model` | string | `claude-opus-4-6` |
-| `llm.use_anthropic` | boolean | `true` \| `false` |
+| `llm.protocol` | string | `anthropic` \| `openai` \| `openai-responses`; `llm.use_anthropic`보다 우선 |
+| `llm.use_anthropic` | boolean | `true` \| `false` (레거시; `llm.protocol` 권장) |
 | `mcp_servers.<name>.command` | string | MCP 서버를 시작하는 명령어 |
 | `mcp_servers.<name>.args` | array | MCP 서버의 커맨드라인 인수 |
 | `mcp_servers.<name>.env` | array | 환경 변수 (`KEY=VALUE` 형식) |
@@ -691,8 +883,9 @@ ocr config set mcp_servers.codegraph.setup 'codegraph init && codegraph index'
 | `OCR_LLM_AUTH_HEADER` | Anthropic auth header (`x-api-key` 또는 `authorization`) |
 | `OCR_LLM_EXTRA_HEADERS` | 쉼표로 구분된 `key=value` HTTP 헤더 |
 | `OCR_LLM_MODEL` | Model name |
+| `OCR_LLM_PROTOCOL` | 프로토콜: `anthropic` \| `openai` \| `openai-responses`; `OCR_USE_ANTHROPIC`보다 우선 |
 | `OCR_LLM_TIMEOUT` | 요청당 HTTP timeout(초), config file의 `timeout_sec`를 override |
-| `OCR_USE_ANTHROPIC` | `true` = Anthropic, `false` = OpenAI |
+| `OCR_USE_ANTHROPIC` | `true` = Anthropic, `false` = OpenAI Chat Completions (레거시; `OCR_LLM_PROTOCOL` 권장) |
 
 ## Telemetry
 
@@ -706,13 +899,22 @@ ocr config set telemetry.otlp_endpoint localhost:4317
 
 exported data에 LLM prompt와 response를 포함하려면 `telemetry.content_logging`을 설정합니다.
 
+**프로토콜 선택:** 환경 변수 `OTEL_EXPORTER_OTLP_PROTOCOL`로 export 프로토콜을 선택할 수 있습니다:
+
+| 값 | 전송 방식 | 설명 |
+|---|---|---|
+| `grpc` (기본값) | gRPC | 기본 포트 4317 |
+| `http/protobuf` | HTTP | 기본 포트 4318 |
+
+**Endpoint 형식:** `telemetry.otlp_endpoint`는 `host:port` 또는 `http://host:port` 형식의 base URL을 지정합니다. 경로를 포함할 필요가 없습니다. SDK가 [OTLP 사양](https://opentelemetry.io/docs/specs/otlp/#otlphttp-request)에 따라 signal 경로(예: `/v1/traces`)를 자동으로 추가합니다.
+
 ## Contributing
 
-개발 환경 설정, coding guideline, pull request 제출 방법은 [CONTRIBUTING.ko-KR.md](CONTRIBUTING.ko-KR.md)를 참고하세요.
+이 프로젝트는 기여해 주신 모든 분들 덕분에 존재합니다. 개발 환경 설정, coding guideline, pull request 제출 방법은 [CONTRIBUTING.ko-KR.md](CONTRIBUTING.ko-KR.md)를 참고하세요.
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=alibaba/open-code-review&type=Date)](https://star-history.com/#alibaba/open-code-review&Date)
+<a href="https://github.com/alibaba/open-code-review/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=alibaba/open-code-review" />
+</a>
 
 ## License
 

@@ -13,7 +13,6 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@alibaba-group/open-code-review"><img alt="npm" src="https://img.shields.io/npm/v/@alibaba-group/open-code-review?style=flat-square" /></a>
   <a href="https://github.com/alibaba/open-code-review/actions/workflows/release.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/alibaba/open-code-review/release.yml?style=flat-square" /></a>
-  <a href="https://goreportcard.com/report/github.com/alibaba/open-code-review"><img alt="Go Report Card" src="https://goreportcard.com/badge/github.com/alibaba/open-code-review?style=flat-square" /></a>
   <a href="https://github.com/alibaba/open-code-review/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/alibaba/open-code-review?style=flat-square" /></a>
   <a href="https://deepwiki.com/alibaba/open-code-review"><img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg" /></a>
   <a href="https://www.bestpractices.dev/projects/13328"><img alt="OpenSSF Best Practices" src="https://img.shields.io/badge/OpenSSF-Silver-4C566A?style=flat-square" /></a>
@@ -92,6 +91,10 @@ The agent's strengths are concentrated where they matter most — dynamic decisi
 
 ## How to Use
 
+### Prerequisites
+
+- **Git >= 2.41** — Open Code Review relies on Git for diff generation, code search, and repository operations.
+
 ### CLI
 
 #### Install
@@ -103,6 +106,18 @@ npm install -g @alibaba-group/open-code-review
 ```
 
 After installation, the `ocr` command is available globally.
+
+**Update**
+
+If you installed via NPM, update manually to the latest version:
+
+```bash
+npm install -g @alibaba-group/open-code-review@latest
+```
+
+NPM installations also check for newer versions in the background by default and upgrade automatically. To disable auto-updates, set `OCR_NO_UPDATE=1`.
+
+If you installed with the install script or a manually downloaded binary, rerun the same install/download command to replace the local binary with the latest release. Use `OCR_VERSION` when you need to pin a specific release tag.
 
 **From GitHub Release**
 
@@ -117,6 +132,32 @@ The script picks the right release binary, verifies its SHA-256 checksum, and in
 ```bash
 OCR_INSTALL_DIR="$HOME/.local/bin" OCR_VERSION=v1.3.13 \
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/alibaba/open-code-review/main/install.sh)"
+```
+
+On Windows (PowerShell 5.1+):
+
+```powershell
+irm https://raw.githubusercontent.com/alibaba/open-code-review/main/install.ps1 | iex
+```
+
+The script picks the right Windows release binary, verifies its SHA-256 checksum, and installs it as `ocr.exe` in `%LOCALAPPDATA%\Programs\ocr`. Override the target with `OCR_INSTALL_DIR` or pin a release with `OCR_VERSION`:
+
+```powershell
+$env:OCR_INSTALL_DIR = "$env:USERPROFILE\bin"
+$env:OCR_VERSION = "v1.3.13"
+irm https://raw.githubusercontent.com/alibaba/open-code-review/main/install.ps1 | iex
+```
+
+Piping a remote script into a shell executes code from the internet. Prefer downloading and inspecting first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alibaba/open-code-review/main/install.sh -o install.sh
+less install.sh && sh install.sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/alibaba/open-code-review/main/install.ps1 -OutFile install.ps1
+notepad install.ps1   # review, then: .\install.ps1
 ```
 
 <details>
@@ -204,7 +245,7 @@ ocr config set custom_providers.my-gateway.api_key your-api-key-here
 ocr config set custom_providers.my-gateway.model gpt-4o
 ```
 
-> `url` and `protocol` are required for custom providers. Supported protocols: `anthropic`, `openai`.
+> `url` and `protocol` are required for custom providers. Supported protocols: `anthropic`, `openai`, `openai-responses`.
 
 Optional settings:
 
@@ -237,6 +278,17 @@ export OCR_LLM_TOKEN=your-api-key-here
 export OCR_LLM_MODEL=claude-opus-4-6
 export OCR_USE_ANTHROPIC=true
 ```
+
+To use the OpenAI Responses API (GPT-5.x / o-series), set `OCR_LLM_PROTOCOL` instead of `OCR_USE_ANTHROPIC`:
+
+```bash
+export OCR_LLM_URL=https://api.openai.com/v1
+export OCR_LLM_TOKEN=your-openai-key
+export OCR_LLM_MODEL=gpt-5.4
+export OCR_LLM_PROTOCOL=openai-responses
+```
+
+`OCR_LLM_PROTOCOL` accepts `anthropic`, `openai`, `openai-responses`, and takes priority over `OCR_USE_ANTHROPIC` when both are set.
 
 Also compatible with Claude Code environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`) and parses `~/.zshrc` / `~/.bashrc` for those exports.
 
@@ -318,9 +370,18 @@ ocr review --from main --to feature-branch
 # Single commit
 ocr review --commit abc123
 
+# Resume an interrupted range or commit review
+ocr session list
+ocr review --from main --to feature-branch --resume <session-id>
+
 # Full-file scan — review whole files instead of a diff (no git history needed)
 ocr scan                          # scan the entire repository
 ocr scan --path internal/agent    # scan a directory or specific files
+
+# Delegation mode — let your AI coding agent perform the review itself
+# OCR handles file selection and rule resolution; no LLM configuration needed
+ocr delegate preview
+ocr delegate rule src/main.go src/handler.go
 ```
 
 ### Integrate with Coding Agents
@@ -337,6 +398,14 @@ npx skills add alibaba/open-code-review --skill open-code-review
 
 This installs the `open-code-review` skill from the [skills registry](skills/open-code-review/SKILL.md), which teaches your coding agent how to invoke `ocr` for code review, classify issues by priority, and optionally apply fixes.
 
+**Delegation mode** — if you want your coding agent to perform the review itself (using OCR only for file selection and rule resolution, no LLM configuration needed on the OCR side):
+
+```bash
+npx skills add alibaba/open-code-review --skill open-code-review-delegate
+```
+
+See [skills/open-code-review-delegate/SKILL.md](skills/open-code-review-delegate/SKILL.md) for details.
+
 #### Option 2: Install as a Claude Code Plugin
 
 For [Claude Code](https://docs.anthropic.com/en/docs/claude-code), install the command plugin through the following command in Claude Code:
@@ -346,7 +415,7 @@ For [Claude Code](https://docs.anthropic.com/en/docs/claude-code), install the c
 /plugin install open-code-review@open-code-review
 ```
 
-This registers the `/open-code-review:review` slash command, which runs OCR and automatically filters and fixes issues.
+This registers the `/open-code-review:review` slash command, which runs OCR and automatically filters and fixes issues. It also provides `/open-code-review:delegate-review` for delegation mode (the agent reviews using its own capabilities while OCR handles file selection and rules).
 
 #### Option 3: Install as a Codex Plugin
 
@@ -425,7 +494,7 @@ For a quick setup without any package manager, simply copy the command file to u
 ```bash
 mkdir -p .claude/commands
 curl -o .claude/commands/open-code-review.md \
-  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/commands/review.md
+  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/claude-code/commands/review.md
 ```
 
 **User-level** (personal global use across all projects):
@@ -433,10 +502,24 @@ curl -o .claude/commands/open-code-review.md \
 ```bash
 mkdir -p ~/.claude/commands
 curl -o ~/.claude/commands/open-code-review.md \
-  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/commands/review.md
+  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/claude-code/commands/review.md
 ```
 
-> **Prerequisite**: All integration methods require the `ocr` CLI to be installed and an LLM configured. See [Install](#install) and [Configure LLM](#1-configure-llm) above.
+For delegation mode (no LLM configuration needed on OCR side):
+
+```bash
+# Project-level
+mkdir -p .claude/commands
+curl -o .claude/commands/open-code-review-delegate.md \
+  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/claude-code/commands/delegate-review.md
+
+# User-level
+mkdir -p ~/.claude/commands
+curl -o ~/.claude/commands/open-code-review-delegate.md \
+  https://raw.githubusercontent.com/alibaba/open-code-review/main/plugins/open-code-review/claude-code/commands/delegate-review.md
+```
+
+> **Prerequisite**: All integration methods require the `ocr` CLI to be installed. Standard mode additionally requires an LLM configured — see [Install](#install) and [Configure LLM](#1-configure-llm) above. Delegation mode does **not** require LLM configuration on the OCR side.
 
 ### CI/CD Integration
 
@@ -455,11 +538,35 @@ The `--from` flag accepts a branch ref (e.g., `origin/main`) or commit SHA as th
 
 The `--format json` flag outputs machine-readable results suitable for parsing in CI scripts.
 
+Each finding carries two structured fields so CI integrations can sort, group, filter, or gate builds without re-parsing comment text:
+
+| Field | Allowed values | Notes |
+|-------|----------------|-------|
+| `category` | `bug`, `security`, `performance`, `maintainability`, `test`, `style`, `documentation`, `other` | The category the issue belongs to. |
+| `severity` | `critical`, `high`, `medium`, `low` | The importance of the issue. |
+
+In JSON output the two fields appear as siblings alongside `content`, `start_line`, etc. In the terminal, they render as an inline `[category · severity]` badge before the comment, colored by severity.
+
 See the [`examples/`](./examples/) directory for integration examples:
 
 - [`github_actions/`](./examples/github_actions/) — GitHub Actions integration example
 - [`gitlab_ci/`](./examples/gitlab_ci/) — GitLab CI integration example
 - [`gitflic_ci/`](./examples/gitflic_ci/) — GitFlic CI integration example
+
+#### GitHub Action
+
+For GitHub, this repository also ships a ready-to-use composite Action at the repo root ([`action.yml`](./action.yml)). Instead of scripting `ocr review` yourself, reference it directly and it handles the full pipeline — checkout, OCR install, running the review, posting inline and summary comments, uploading artifacts, and retry/idempotency:
+
+```yaml
+- uses: alibaba/open-code-review@main
+  with:
+    llm_url: ${{ secrets.OCR_LLM_URL }}
+    llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+    llm_model: ${{ vars.OCR_LLM_MODEL }}
+    llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC }}
+```
+
+Pin to a version tag or commit SHA for reproducibility. See the [`examples/github_actions/`](./examples/github_actions/) directory for a complete workflow demo and the full list of inputs, outputs, and comment-posting modes (sticky summary, incremental non-destructive posting).
 
 ## Commands
 
@@ -467,6 +574,8 @@ See the [`examples/`](./examples/) directory for integration examples:
 |---------|-------|-------------|
 | `ocr review` | `ocr r` | Start a diff-based code review |
 | `ocr scan` | `ocr s` | Review whole files (no diff required) |
+| `ocr delegate preview` | `ocr d preview` | Preview reviewable files with mode/ref metadata (no LLM required) |
+| `ocr delegate rule <path...>` | `ocr d rule` | Output resolved review rules grouped by content (no LLM required) |
 | `ocr rules check <file>` | — | Preview which review rule applies to a file path |
 | `ocr config provider` | — | Interactive provider setup (built-in, custom, or manual) |
 | `ocr config model` | — | Interactive model selection for the active provider |
@@ -474,6 +583,8 @@ See the [`examples/`](./examples/) directory for integration examples:
 | `ocr config unset custom_providers.<name>` | — | Delete a custom provider |
 | `ocr llm test` | — | Test LLM connectivity |
 | `ocr llm providers` | — | List built-in LLM providers |
+| `ocr session list` | `ocr sessions list`, `ocr session ls` | List saved review sessions |
+| `ocr session show <id>` | `ocr sessions show <id>` | Inspect one session and its per-file checkpoints |
 | `ocr viewer` | `ocr v` | Launch WebUI session viewer on `localhost:5483` |
 | `ocr version` | — | Show version info |
 
@@ -487,16 +598,55 @@ See the [`examples/`](./examples/) directory for integration examples:
 | `--commit` | `-c` | — | Single commit to review |
 | `--exclude` | — | — | Comma-separated gitignore-style patterns to skip; merged with rule.json excludes |
 | `--preview` | `-p` | `false` | Preview which files will be reviewed without running the LLM |
+| `--resume` | — | — | Resume from a previous compatible range or commit review session |
 | `--format` | `-f` | `text` | Output format: `text` or `json` |
 | `--concurrency` | — | `8` | Max concurrent file reviews |
 | `--timeout` | — | `10` | Concurrent task timeout in minutes |
 | `--audience` | — | `human` | `human` (show progress) or `agent` (summary only) |
 | `--background` | `-b` | — | Optional requirement/business context for the review; auto-filled from commit message when using `--commit` |
+| `--background-file` | `-B` | — | Optional requirement/business context from a Markdown file; Combined with `--background` the inline value is given first |
 | `--model` | — | — | Select or override the LLM model for this review |
 | `--rule` | — | — | Path to custom JSON review rules |
 | `--max-tools` | — | built-in | Max tool call rounds per file; only takes effect when greater than template default |
-| `--max-git-procs` | — | built-in | Max concurrent git subprocesses |
-| `--tools` | — | — | Path to custom JSON tools config |
+| `--max-git-procs` | — | `16` | Max concurrent git subprocesses |
+| `--tools` | — | built-in | Path to custom JSON tools config |
+
+#### Resumable Reviews and Sessions
+
+Every `ocr review` run persists a local session log under
+`~/.opencodereview/sessions/`. Successful text output stays focused on review
+results and does not print the session ID; use `ocr session list/show` to find
+saved sessions, or `--format json` to include `session_id` in machine-readable
+output. If a range or commit review is interrupted, list the saved sessions and
+resume from the one that matches the same review target:
+
+```bash
+ocr session list
+ocr session show <session-id>
+ocr review --from main --to feature-branch --resume <session-id>
+ocr review --commit abc123 --resume <session-id>
+```
+
+Resume is intentionally strict: it only supports branch-range and single-commit
+reviews, not workspace reviews, and the current `--from/--to` or `--commit`
+must match the saved session. `--preview` cannot be combined with `--resume`.
+
+When `--format json` is used, resumed runs include:
+
+- `session_id` — the current run's session ID
+- `resume.resumed_from` — the source session ID
+- `resume.reused_files` — files reused from saved checkpoints
+- `resume.rerun_files` — files reviewed again in the current run
+
+### `ocr session` Flags
+
+| Command | Flag | Default | Description |
+|---------|------|---------|-------------|
+| `ocr session list` | `--repo` | current dir | Repository whose sessions should be listed |
+| `ocr session list` | `--json` | `false` | Emit session summaries as JSON |
+| `ocr session list` | `--limit` | `20` | Cap listed sessions; use `0` for unlimited |
+| `ocr session show <id>` | `--repo` | current dir | Repository whose session should be inspected |
+| `ocr session show <id>` | `--json` | `false` | Emit session metadata and per-file items as JSON |
 
 ### `ocr scan` Flags
 
@@ -522,6 +672,31 @@ non-git directories too (it falls back to a filesystem walk that honors `.gitign
 Before each run, `ocr scan` prints a rough token-cost estimate. Use `--preview` to see the
 file list first, and `--max-tokens-budget` to cap spend on large repositories.
 
+### `ocr delegate` Flags
+
+`ocr delegate` is the delegation mode for AI coding agents. It provides deterministic
+file selection and rule resolution without calling any LLM — the host agent performs
+the actual review using its own capabilities.
+
+| Sub-command | Description |
+|-------------|-------------|
+| `ocr delegate preview` | Output reviewable file list with mode/ref metadata |
+| `ocr delegate rule <path...>` | Output resolved review rules grouped by content |
+
+Both sub-commands share these flags:
+
+| Flag | Shorthand | Default | Description |
+|------|-----------|---------|-------------|
+| `--repo` | — | current dir | Git repository root |
+| `--from` | — | — | Source ref (e.g., `main`) |
+| `--to` | — | — | Target ref (e.g., `feature-branch`) |
+| `--commit` | `-c` | — | Single commit to review |
+| `--exclude` | — | — | Comma-separated gitignore-style patterns to skip |
+| `--rule` | — | — | Path to custom JSON review rules |
+| `--background` | `-b` | — | Optional requirement/business context |
+| `--background-file` | `-B` | — | Business context from a Markdown file |
+| `--max-git-procs` | — | `16` | Max concurrent git subprocesses |
+
 ## Examples
 
 ```bash
@@ -546,12 +721,24 @@ ocr review --from main --to my-feature --concurrency 4
 # Review a specific commit with verbose JSON output
 ocr review --commit abc123 --format json --audience agent
 
+# Resume an interrupted range or commit review
+ocr session list
+ocr session show <session-id>
+ocr review --from main --to my-feature --resume <session-id>
+ocr review --commit abc123 --resume <session-id>
+
 # Select or override model for this review
 ocr review --model claude-opus-4-6
 ocr review --commit abc123 --model claude-sonnet-4-6
 
 # Provide requirement context for more targeted review
 ocr review --background "Adding rate limiting to the login API"
+
+# Provide requirement context from a Markdown file
+ocr review --background-file ./docs/my_business_context.md
+
+# Combine inline context with a local context file (both are used)
+ocr review --background "Focus on auth" --background-file ./docs/my_business_context.md
 
 # Use custom review rules
 ocr review --rule /path/to/my-rules.json
@@ -574,6 +761,12 @@ ocr scan --repo /path/to/plain/dir --format json
 
 # Fastest scan: skip planning, dedup, and the project summary
 ocr scan --no-plan --no-dedup --no-summary
+
+# Delegation mode — let your AI agent drive the review (no LLM config needed)
+ocr delegate preview
+ocr delegate preview --from main --to feature-branch
+ocr delegate preview --commit abc123
+ocr delegate rule internal/handler.go internal/service.go cmd/main.go
 
 # View review session history in browser
 ocr viewer
@@ -716,7 +909,7 @@ Config file: `~/.opencodereview/config.json`
 | `provider` | string | `anthropic` \| `openai` \| `dashscope` \| `deepseek` \| `z-ai` |
 | `providers.<name>.api_key` | string | Provider-specific API key |
 | `providers.<name>.url` | string | Provider base URL override |
-| `providers.<name>.protocol` | string | `anthropic` \| `openai` |
+| `providers.<name>.protocol` | string | `anthropic` \| `openai` \| `openai-responses` |
 | `providers.<name>.model` | string | Model name for the provider |
 | `providers.<name>.models` | array | Optional provider model list for interactive selection |
 | `providers.<name>.auth_header` | string | `x-api-key` \| `authorization` |
@@ -731,10 +924,10 @@ Config file: `~/.opencodereview/config.json`
 | `llm.timeout_sec` | integer | Per-request HTTP timeout in seconds (default: `300`) |
 | `llm.extra_headers` | string | Comma-separated `key=value` HTTP headers |
 | `llm.model` | string | `claude-opus-4-6` |
-| `llm.protocol` | string | `anthropic` \| `openai` \| `codex` \| `claude` |
+| `llm.protocol` | string | `anthropic` \| `openai` \| `openai-responses` \| `codex` \| `claude`; takes priority over `llm.use_anthropic` |
 | `llm.codex_runtime` | string | `exec` \| `app_server` |
 | `llm.claude_runtime` | string | `exec` \| `app_server` |
-| `llm.use_anthropic` | boolean | `true` \| `false` |
+| `llm.use_anthropic` | boolean | `true` \| `false` (legacy; prefer `llm.protocol`) |
 | `mcp_servers.<name>.command` | string | Command to start the MCP server |
 | `mcp_servers.<name>.args` | array | Command-line arguments for the MCP server |
 | `mcp_servers.<name>.env` | array | Environment variables in `KEY=VALUE` format |
@@ -794,9 +987,9 @@ ocr config set mcp_servers.codegraph.setup 'codegraph init && codegraph index'
 | `OCR_LLM_AUTH_HEADER` | Anthropic auth header (`x-api-key` or `authorization`) |
 | `OCR_LLM_EXTRA_HEADERS` | Comma-separated `key=value` HTTP headers |
 | `OCR_LLM_MODEL` | Model name |
+| `OCR_LLM_PROTOCOL` | Protocol: `anthropic` \| `openai` \| `openai-responses`; takes priority over `OCR_USE_ANTHROPIC` |
 | `OCR_LLM_TIMEOUT` | Per-request HTTP timeout in seconds (overrides config file `timeout_sec`) |
-| `OCR_USE_ANTHROPIC` | `true` = Anthropic, `false` = OpenAI |
-
+| `OCR_USE_ANTHROPIC` | `true` = Anthropic, `false` = OpenAI Chat Completions (legacy; prefer `OCR_LLM_PROTOCOL`) |
 
 ## Telemetry
 
@@ -810,13 +1003,23 @@ ocr config set telemetry.otlp_endpoint localhost:4317
 
 Set `telemetry.content_logging` to include LLM prompts and responses in exported data.
 
+**Protocol selection:** Set the environment variable `OTEL_EXPORTER_OTLP_PROTOCOL` to choose the export protocol:
+
+| Value | Transport | Notes |
+|---|---|---|
+| `grpc` (default) | gRPC | Default port 4317 |
+| `http/protobuf` | HTTP | Default port 4318 |
+
+**Endpoint format:** `telemetry.otlp_endpoint` expects a base URL in `host:port` or `http://host:port` format, without a path component. The SDK appends the signal path (e.g. `/v1/traces`) automatically per the [OTLP specification](https://opentelemetry.io/docs/specs/otlp/#otlphttp-request).
+
+
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding guidelines, and how to submit pull requests.
+This project exists thanks to all the people who contribute. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding guidelines, and how to submit pull requests.
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=alibaba/open-code-review&type=Date)](https://star-history.com/#alibaba/open-code-review&Date)
+<a href="https://github.com/alibaba/open-code-review/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=alibaba/open-code-review" />
+</a>
 
 ## License
 

@@ -3,10 +3,13 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"os"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -21,6 +24,30 @@ func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) 
 		return ctx, trace.SpanFromContext(ctx)
 	}
 	return getTracer().Start(ctx, name, opts...)
+}
+
+// ContextWithTraceParentFromEnv extracts W3C traceparent from the TRACEPARENT
+// environment variable and returns a context carrying the upstream span context.
+// Returns ctx unchanged when telemetry is disabled or the variable is unset.
+func ContextWithTraceParentFromEnv(ctx context.Context) context.Context {
+	if !IsEnabled() {
+		return ctx
+	}
+	tp := os.Getenv("TRACEPARENT")
+	if tp == "" {
+		return ctx
+	}
+	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier{"traceparent": tp})
+}
+
+// TraceIDFromContext returns the hex-encoded trace ID of the span carried by
+// ctx, or "" if ctx carries no valid span (e.g. telemetry is disabled).
+func TraceIDFromContext(ctx context.Context) string {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.TraceID().IsValid() {
+		return ""
+	}
+	return sc.TraceID().String()
 }
 
 // EndSpan ends the span and records error status if present.
@@ -69,8 +96,32 @@ func RecordToolResult(span trace.Span, toolName string, durationMs int64, err er
 		SetAttr(span, "tool.status", "error")
 		SetAttr(span, "tool.error", err.Error())
 		span.SetStatus(codes.Error, err.Error())
+		span.RecordError(err)
 	} else {
 		SetAttr(span, "tool.status", "ok")
+	}
+}
+
+// StartLLMSpan creates a span for an LLM request with standard attributes.
+func StartLLMSpan(ctx context.Context, model string) (context.Context, trace.Span) {
+	return StartSpan(ctx, "llm.request",
+		trace.WithAttributes(attribute.String("llm.model", model)))
+}
+
+// RecordLLMResult sets the outcome of an LLM request on the span.
+func RecordLLMResult(span trace.Span, duration time.Duration, totalTokens int64, err error) {
+	if span == nil {
+		return
+	}
+	SetAttr(span, "llm.duration_ms", duration.Milliseconds())
+	SetAttr(span, "llm.total_tokens", totalTokens)
+	if err != nil {
+		SetAttr(span, "llm.status", "error")
+		SetAttr(span, "llm.error", err.Error())
+		span.SetStatus(codes.Error, err.Error())
+		span.RecordError(err)
+	} else {
+		SetAttr(span, "llm.status", "ok")
 	}
 }
 

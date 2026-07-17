@@ -6,7 +6,7 @@ import (
 )
 
 func TestLookupProvider_KnownProviders(t *testing.T) {
-	names := []string{"anthropic", "openai", "dashscope"}
+	names := []string{"anthropic", "openai", "dashscope", "edenai"}
 	for _, name := range names {
 		p, ok := LookupProvider(name)
 		if !ok {
@@ -40,7 +40,7 @@ func TestListProviders_Order(t *testing.T) {
 	if len(providers) < 3 {
 		t.Fatalf("expected at least 3 providers, got %d", len(providers))
 	}
-	expected := []string{"anthropic", "baidu-qianfan", "dashscope", "dashscope-tokenplan", "deepseek", "hy-tokenplan", "kimi", "mimo", "minimax", "openai", "tencent-tokenhub", "volcengine", "z-ai", "z-ai-coding"}
+	expected := []string{"anthropic", "baidu-qianfan", "dashscope", "dashscope-tokenplan", "deepseek", "edenai", "hy-tokenplan", "kimi", "litellm", "mimo", "minimax", "ollama-cloud", "openai", "tencent-tokenhub", "volcengine", "z-ai", "z-ai-coding"}
 	if len(providers) != len(expected) {
 		t.Fatalf("expected %d providers, got %d", len(expected), len(providers))
 	}
@@ -119,10 +119,117 @@ func TestLookupProvider_OpenAIDetails(t *testing.T) {
 	if !ok {
 		t.Fatal("openai not found")
 	}
-	if p.Protocol != "openai" {
-		t.Errorf("Protocol = %q, want %q", p.Protocol, "openai")
+	if p.Protocol != ProtocolOpenAIChatCompletions {
+		t.Errorf("Protocol = %q, want %q", p.Protocol, ProtocolOpenAIChatCompletions)
 	}
 	if p.AuthHeader != "" {
 		t.Errorf("AuthHeader = %q, want empty", p.AuthHeader)
+	}
+}
+
+func TestLookupProvider_OllamaCloudDetails(t *testing.T) {
+	p, ok := LookupProvider("ollama-cloud")
+	if !ok {
+		t.Fatal("ollama-cloud not found")
+	}
+	if p.Protocol != ProtocolOpenAIChatCompletions {
+		t.Errorf("Protocol = %q, want %q", p.Protocol, ProtocolOpenAIChatCompletions)
+	}
+	if p.BaseURL != "https://ollama.com/v1" {
+		t.Errorf("BaseURL = %q, want %q", p.BaseURL, "https://ollama.com/v1")
+	}
+	if p.EnvVar != "OLLAMA_API_KEY" {
+		t.Errorf("EnvVar = %q, want %q", p.EnvVar, "OLLAMA_API_KEY")
+	}
+	if p.AuthHeader != "" {
+		t.Errorf("AuthHeader = %q, want empty (OpenAI-compatible uses Bearer by default)", p.AuthHeader)
+	}
+	// Models list mirrors the live /v1/models endpoint (as of Jul 2026).
+	// Every entry was runtime-verified to support tool calling via /v1/chat/completions.
+	expectedModels := []string{
+		"deepseek-v4-flash",
+		"deepseek-v4-pro",
+		"gemma4:31b",
+		"glm-5.1",
+		"glm-5.2",
+		"gpt-oss:120b",
+		"gpt-oss:20b",
+		"kimi-k2.5",
+		"kimi-k2.6",
+		"kimi-k2.7-code",
+		"minimax-m2.5",
+		"minimax-m2.7",
+		"minimax-m3",
+		"mistral-large-3:675b",
+		"nemotron-3-nano:30b",
+		"nemotron-3-super",
+		"nemotron-3-ultra",
+		"qwen3.5:397b",
+	}
+	if len(p.Models) != len(expectedModels) {
+		t.Fatalf("Models length = %d, want %d", len(p.Models), len(expectedModels))
+	}
+	for i, model := range expectedModels {
+		if p.Models[i] != model {
+			t.Errorf("Models[%d] = %q, want %q", i, p.Models[i], model)
+		}
+	}
+}
+
+func TestLookupProvider_LiteLLMDetails(t *testing.T) {
+	p, ok := LookupProvider("litellm")
+	if !ok {
+		t.Fatal("litellm not found")
+	}
+	if p.DisplayName != "LiteLLM AI Gateway" {
+		t.Errorf("DisplayName = %q, want %q", p.DisplayName, "LiteLLM AI Gateway")
+	}
+	if p.Protocol != ProtocolOpenAIChatCompletions {
+		t.Errorf("Protocol = %q, want %q", p.Protocol, ProtocolOpenAIChatCompletions)
+	}
+	if p.BaseURL != "http://localhost:4000/v1" {
+		t.Errorf("BaseURL = %q, want %q", p.BaseURL, "http://localhost:4000/v1")
+	}
+	if p.EnvVar != "LITELLM_API_KEY" {
+		t.Errorf("EnvVar = %q, want %q", p.EnvVar, "LITELLM_API_KEY")
+	}
+	if p.AuthHeader != "" {
+		t.Errorf("AuthHeader = %q, want empty (OpenAI-compatible uses Bearer by default)", p.AuthHeader)
+	}
+	// LiteLLM uses provider/model format for routing to backing providers.
+	expectedModels := []string{
+		"anthropic/claude-sonnet-4-6",
+		"anthropic/claude-opus-4-6",
+		"anthropic/claude-haiku-4-5",
+		"openai/gpt-4o",
+		"openai/gpt-5.4",
+		"openai/o3",
+		"vertex_ai/gemini-2.5-flash",
+		"vertex_ai/gemini-2.5-pro",
+		"bedrock/anthropic.claude-sonnet-4-6-v1",
+		"groq/llama-4-scout-17b-16e-instruct",
+		"mistral/mistral-large-latest",
+		"deepseek/deepseek-chat",
+	}
+	if len(p.Models) != len(expectedModels) {
+		t.Fatalf("Models length = %d, want %d", len(p.Models), len(expectedModels))
+	}
+	for i, model := range expectedModels {
+		if p.Models[i] != model {
+			t.Errorf("Models[%d] = %q, want %q", i, p.Models[i], model)
+		}
+	}
+}
+
+// TestProviders_AllProtocolsCanonical verifies every registry entry uses a
+// canonical protocol constant — no stale "openai" / "anthropic" literals that
+// would bypass NormalizeProtocol downstream.
+func TestProviders_AllProtocolsCanonical(t *testing.T) {
+	for _, p := range ListProviders() {
+		switch p.Protocol {
+		case ProtocolAnthropic, ProtocolOpenAIChatCompletions, ProtocolOpenAIResponses:
+		default:
+			t.Errorf("provider %q has non-canonical Protocol %q", p.Name, p.Protocol)
+		}
 	}
 }

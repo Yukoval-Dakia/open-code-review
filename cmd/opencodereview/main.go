@@ -58,6 +58,10 @@ func dispatch() error {
 		return runLearn(args[1:])
 	case "viewer":
 		return runViewer(args[1:])
+	case "delegate", "d":
+		return runDelegate(args[1:])
+	case "session", "sessions":
+		return runSession(args[1:])
 	case "-h", "--help":
 		printTopLevelUsage()
 		return nil
@@ -75,11 +79,13 @@ Usage:
 Commands:
   review, r    Start a diff-based code review
   scan, s      Scan entire files (no diff required)
+  delegate, d  Output review spec for host-agent delegation (no LLM required)
   rules        Inspect and debug review rules
   learn        Collect prior-review feedback into the learnings store
   config       Manage configuration settings
   llm          LLM utility commands
   viewer       Start the WebUI session viewer
+  session, sessions  List and inspect saved review sessions
   version      Show version information
 
 Examples:
@@ -92,6 +98,7 @@ Examples:
   ocr config set llm.model opus-4-6        Set a config value
   ocr llm test                             Test LLM connectivity
   ocr llm providers                        List built-in providers
+  ocr session list                         List saved review sessions
   ocr version                              Show version info
 
 Use "ocr review -h" for more information about review.
@@ -99,6 +106,7 @@ Use "ocr scan -h" for more information about scan.
 Use "ocr rules -h" for more information about rules.
 Use "ocr config" for more information about config.
 Use "ocr llm" for more information about LLM utilities.
+Use "ocr session -h" for more information about session inspection.
 
 GitHub: https://github.com/alibaba/open-code-review`)
 }

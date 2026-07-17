@@ -220,15 +220,15 @@ type Config struct {
 }
 
 type LlmConfig struct {
-	URL           string            `json:"url,omitempty"`
-	AuthToken     string            `json:"auth_token,omitempty"`
-	AuthHeader    string            `json:"auth_header,omitempty"`
-	Model         string            `json:"model,omitempty"`
-	Protocol      string            `json:"protocol,omitempty"`      // anthropic, openai, codex, or claude
-	CodexRuntime  string            `json:"codex_runtime,omitempty"` // exec or app_server
-	UseAnthropic  *bool             `json:"use_anthropic,omitempty"` // nil = default true; false = OpenAI protocol
-	ExtraBody     map[string]any    `json:"extra_body,omitempty"`
-	ExtraHeaders  map[string]string `json:"extra_headers,omitempty"`
+	URL          string            `json:"url,omitempty"`
+	AuthToken    string            `json:"auth_token,omitempty"`
+	AuthHeader   string            `json:"auth_header,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	Protocol     string            `json:"protocol,omitempty"`      // canonical protocol name (anthropic|openai|openai-responses|codex|claude); takes priority over UseAnthropic
+	CodexRuntime string            `json:"codex_runtime,omitempty"` // exec or app_server
+	UseAnthropic *bool             `json:"use_anthropic,omitempty"` // nil = default true; false = OpenAI protocol (legacy fallback)
+	ExtraBody    map[string]any    `json:"extra_body,omitempty"`
+	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`
 }
 
 // TelemetryConfig holds telemetry-specific settings.
@@ -342,12 +342,20 @@ func setConfigValue(cfg *Config, key, value string) error {
 	case "llm.model", "llm.Model":
 		cfg.Llm.Model = value
 	case "llm.protocol", "llm.Protocol":
-		v := strings.ToLower(strings.TrimSpace(value))
-		switch v {
-		case "anthropic", "openai", "codex":
-			cfg.Llm.Protocol = v
-		default:
-			return fmt.Errorf("invalid llm.protocol value %q: must be 'anthropic', 'openai', or 'codex'", value)
+		normalized := llm.NormalizeProtocol(value)
+		if err := llm.ValidateProtocol(normalized); err != nil {
+			return err
+		}
+		cfg.Llm.Protocol = normalized
+		// Mirror use_anthropic so older binaries that predate llm.protocol
+		// still pick the right protocol family: anthropic -> true, the OpenAI
+		// family (including openai-responses) -> false.
+		if normalized == llm.ProtocolAnthropic {
+			t := true
+			cfg.Llm.UseAnthropic = &t
+		} else {
+			f := false
+			cfg.Llm.UseAnthropic = &f
 		}
 	case "llm.codex_runtime", "llm.CodexRuntime":
 		v := strings.ToLower(strings.TrimSpace(value))
@@ -363,6 +371,15 @@ func setConfigValue(cfg *Config, key, value string) error {
 			return fmt.Errorf("invalid boolean for llm.use_anthropic: %w", err)
 		}
 		cfg.Llm.UseAnthropic = &b
+		// Mirror protocol for backward compatibility. true always selects
+		// anthropic. false only mirrors to the legacy openai default when
+		// protocol is unset or already a legacy value (anthropic/openai);
+		// openai-responses is preserved to avoid a silent downgrade.
+		if b {
+			cfg.Llm.Protocol = llm.ProtocolAnthropic
+		} else if cfg.Llm.Protocol == "" || cfg.Llm.Protocol == llm.ProtocolAnthropic || cfg.Llm.Protocol == llm.ProtocolOpenAIChatCompletions {
+			cfg.Llm.Protocol = llm.ProtocolOpenAIChatCompletions
+		}
 	case "language", "Language":
 		cfg.Language = value
 	case "telemetry.enabled", "telemetry.Enabled":
@@ -392,7 +409,7 @@ func setConfigValue(cfg *Config, key, value string) error {
 		}
 		cfg.Llm.ExtraBody = m
 	default:
-		return fmt.Errorf("unknown config key: %s\nSupported keys: provider, model, providers.<name>.<field>, custom_providers.<name>.<field>, mcp_servers.<name>.<field>, llm.url, llm.auth_token, llm.auth_header, llm.model, llm.protocol, llm.codex_runtime, llm.use_anthropic, llm.extra_body, llm.extra_headers, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging\nProvider fields: api_key, url, protocol, model, models, auth_header, extra_body, extra_headers\nMCP server fields: command, args, env, tools, setup", key)
+		return fmt.Errorf("unknown config key: %s\nSupported keys: provider, model, providers.<name>.<field>, custom_providers.<name>.<field>, mcp_servers.<name>.<field>, llm.url, llm.auth_token, llm.auth_header, llm.model, llm.protocol, llm.codex_runtime, llm.use_anthropic, llm.extra_body, llm.extra_headers, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging\nProvider fields: api_key, url, protocol, model, models, auth_header, extra_body, extra_headers\nProtocol values: anthropic, openai, openai-responses, codex, claude\nMCP server fields: command, args, env, tools, setup", key)
 	}
 	return nil
 }
@@ -404,10 +421,11 @@ func applyProviderField(entry *ProviderEntry, field, key, value string) error {
 	case "url":
 		entry.URL = value
 	case "protocol":
-		if value != "anthropic" && value != "openai" {
-			return fmt.Errorf("invalid protocol %q: must be \"anthropic\" or \"openai\"", value)
+		normalized := llm.NormalizeProtocol(value)
+		if err := llm.ValidateProtocol(normalized); err != nil {
+			return err
 		}
-		entry.Protocol = value
+		entry.Protocol = normalized
 	case "model":
 		entry.Model = value
 	case "models":
@@ -498,21 +516,11 @@ func ensureModelInList(models []string, model string) []string {
 	if model == "" {
 		return models
 	}
-	if modelListContains(models, model) {
+	if llm.ModelListContains(models, model) {
 		return models
 	}
 	out := append([]string(nil), models...)
 	return append(out, model)
-}
-
-func modelListContains(models []string, target string) bool {
-	target = strings.TrimSpace(target)
-	for _, model := range models {
-		if model == target {
-			return true
-		}
-	}
-	return false
 }
 
 func setProviderValue(cfg *Config, key, value string) error {

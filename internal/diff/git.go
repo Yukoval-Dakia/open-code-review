@@ -116,14 +116,14 @@ func (p *Provider) GetDiff(ctx context.Context) ([]model.Diff, error) {
 		if base == "" {
 			return nil, fmt.Errorf("cannot find merge-base between %s and %s", p.from, p.to)
 		}
-		out, err := p.runGit(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--end-of-options", base, p.to, "--")
+		out, err := p.runGit(ctx, "-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--end-of-options", base, p.to, "--")
 		if err != nil {
 			return nil, fmt.Errorf("git diff failed: %w", err)
 		}
 		combined.WriteString(out)
 
 	case ModeCommit:
-		out, err := p.runGit(ctx, "show", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--end-of-options", p.commit)
+		out, err := p.runGit(ctx, "-c", "core.quotepath=false", "show", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--end-of-options", p.commit)
 		if err != nil {
 			return nil, fmt.Errorf("git show failed: %w", err)
 		}
@@ -261,14 +261,19 @@ func (p *Provider) computeMergeBase(ctx context.Context, from, to string) string
 }
 
 func (p *Provider) workspaceTrackedDiff(ctx context.Context) (string, error) {
-	out, err := p.runGit(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--")
+	out, err := p.runGit(ctx, "-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--end-of-options", "HEAD", "--")
 	if err == nil && out != "" {
 		return out, nil
 	}
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	return p.runGit(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--staged", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--")
+	// Fall back to the staged diff when `git diff HEAD` errored or was empty. This is
+	// not redundant with the call above: in a repository with no commits yet there is no
+	// HEAD, so `git diff HEAD` fails with "bad revision 'HEAD'", but `git diff --staged`
+	// still surfaces staged changes by diffing the index against the empty tree — the only
+	// way to review a workspace before its first commit.
+	return p.runGit(ctx, "-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--staged", "--")
 }
 
 func (p *Provider) untrackedFileDiffs(ctx context.Context) ([]string, error) {
@@ -310,7 +315,7 @@ func (p *Provider) untrackedFileDiffs(ctx context.Context) ([]string, error) {
 }
 
 func (p *Provider) untrackedFilesList(ctx context.Context) ([]string, error) {
-	out, err := p.runGit(ctx, "ls-files", "--others", "--exclude-standard")
+	out, err := p.runGit(ctx, "-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard")
 	if err != nil || out == "" {
 		return nil, nil
 	}
