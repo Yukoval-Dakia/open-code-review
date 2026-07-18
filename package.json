@@ -14,11 +14,11 @@
   ],
   "scripts": {
     "postinstall": "node scripts/install.js",
-    "test:github-actions": "node scripts/github-actions/post-review-comments.test.js"
+    "test:github-actions": "node scripts/github-actions/post-review-comments.test.js && node scripts/github-actions/collect-feedback.test.js"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/alibaba/open-code-review.git"
+    "url": "git+https://github.com/alibaba/open-code-review.git"
   },
   "publishConfig": {
     "access": "public"

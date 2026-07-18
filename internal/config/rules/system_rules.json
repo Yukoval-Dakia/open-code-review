@@ -8,13 +8,18 @@
     "**/package.json": "package_json.md",
     "**/Cargo.toml": "cargo_toml.md",
     "**/*.{json,json5}": "json.md",
+    ".github/workflows/**/*.{yaml,yml}": "github_workflows.md",
+    ".github/**/*.{yaml,yml}": "github_config.md",
     "**/*.{yaml,yml}": "yaml.md",
     "**/*.java": "java.md",
+    "**/*.{ftl,ftlh,ftlx}": "freemarker.md",
     "**/*.ets": "arkts.md",
+    "**/*.astro": "astro.md",
     "**/*.{ts,js,tsx,jsx}": "ts_js_tsx_jsx.md",
     "**/*.{kt}": "kotlin.md",
     "**/*.rs": "rust.md",
     "**/*.{cpp,cc,hpp}": "cpp.md",
-    "**/*.c": "c.md"
+    "**/*.c": "c.md",
+    "**/*.py": "python.md"
   }
 }

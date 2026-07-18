@@ -1,5 +1,6 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const CopyPlugin = require('copy-webpack-plugin');
 
 module.exports = {
   mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
@@ -32,6 +33,14 @@ module.exports = {
       {
         test: /\.svg$/,
         type: 'asset/resource'
+      },
+      {
+        test: /\.(png|jpg|jpeg|gif)$/,
+        type: 'asset/resource'
+      },
+      {
+        test: /\.md$/,
+        type: 'asset/source'
       }
     ]
   },
@@ -40,16 +49,26 @@ module.exports = {
   },
   devServer: {
     port: 3030,
-    static: { directory: __dirname },
+    host: '0.0.0.0',
+    allowedHosts: 'all',
+    static: [
+      { directory: path.resolve(__dirname, 'public') },
+      { directory: __dirname }
+    ],
     historyApiFallback: {
       index: '/index.html',
-      rewrites: [{ from: /^\/_p\/\d+\//, to: '/index.html' }]
+      rewrites: [{ from: /^\/\_p\/\d+\//, to: '/index.html' }]
     }
   },
   plugins: [
     new HtmlWebpackPlugin({
       template: './index.html',
       inject: 'body'
+    }),
+    new CopyPlugin({
+      patterns: [
+        { from: 'public', to: '.', noErrorOnMissing: true }
+      ]
     })
   ]
 };
