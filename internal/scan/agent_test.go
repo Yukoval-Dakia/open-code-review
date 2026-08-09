@@ -1,14 +1,18 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package scan
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/config/template"
-	"github.com/open-code-review/open-code-review/internal/llmloop"
-	"github.com/open-code-review/open-code-review/internal/model"
-	"github.com/open-code-review/open-code-review/internal/session"
-	"github.com/open-code-review/open-code-review/internal/tool"
+	"github.com/alibaba/open-code-review/internal/config/template"
+	"github.com/alibaba/open-code-review/internal/llm"
+	"github.com/alibaba/open-code-review/internal/llmloop"
+	"github.com/alibaba/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/session"
+	"github.com/alibaba/open-code-review/internal/tool"
 )
 
 func newAgentForTest(t *testing.T, tpl template.ScanTemplate) *Agent {
@@ -104,7 +108,7 @@ func TestPreview_DoesNotMutateAgentItems(t *testing.T) {
 	if got := a.items; got != nil {
 		t.Fatalf("pre-Preview items should be nil, got %v", got)
 	}
-	if _, err := a.Preview(t.Context()); err != nil {
+	if _, err := a.preview(t.Context()); err != nil {
 		t.Fatalf("Preview: %v", err)
 	}
 	if a.items != nil {
@@ -121,7 +125,7 @@ func TestPreview_EmptyResultEntriesIsNonNilSlice(t *testing.T) {
 		RepoDir:  repo,
 		Template: makeTemplateWithFullScan(),
 	})
-	got, err := a.Preview(t.Context())
+	got, err := a.preview(t.Context())
 	if err != nil {
 		t.Fatalf("Preview: %v", err)
 	}
@@ -248,6 +252,40 @@ func TestFilterLargeScans(t *testing.T) {
 		if it.Path == "huge.go" {
 			t.Errorf("huge.go should have been filtered")
 		}
+	}
+}
+
+// exactNTokens builds a string that llm.CountTokens reports as exactly n
+// tokens, failing loudly if the tokenizer disagrees so fixture drift cannot
+// silently weaken the boundary assertions below.
+func exactNTokens(t *testing.T, n int) string {
+	t.Helper()
+	s := strings.TrimSpace(strings.Repeat("a ", n))
+	if got := llm.CountTokens(s); got != n {
+		t.Fatalf("fixture drift: llm.CountTokens(<%d-token string>) = %d, want %d", n, got, n)
+	}
+	return s
+}
+
+// TestFilterLargeScans_Boundary pins the 80% threshold exactly: with
+// MaxTokens=100 the limit is 80, so an 80-token item is kept and an 81-token
+// one is dropped. TestFilterLargeScans above uses margins wide enough to pass
+// at any threshold, so it does not pin the value.
+func TestFilterLargeScans_Boundary(t *testing.T) {
+	tpl := makeTemplateWithFullScan()
+	tpl.MaxTokens = 100 // threshold = 80
+	a := newAgentForTest(t, tpl)
+
+	in := []model.ScanItem{
+		{Path: "at-limit.go", Content: exactNTokens(t, 80)},
+		{Path: "over-limit.go", Content: exactNTokens(t, 81)},
+	}
+	out := a.filterLargeScans(in)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 kept, got %d", len(out))
+	}
+	if out[0].Path != "at-limit.go" {
+		t.Errorf("kept wrong file: got %s, want at-limit.go", out[0].Path)
 	}
 }
 

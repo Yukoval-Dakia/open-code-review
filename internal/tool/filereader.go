@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package tool
 
 import (
@@ -11,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/open-code-review/open-code-review/internal/gitcmd"
-	"github.com/open-code-review/open-code-review/internal/pathutil"
+	"github.com/alibaba/open-code-review/internal/gitcmd"
+	"github.com/alibaba/open-code-review/internal/pathutil"
 )
 
 // ReviewMode represents the active review mode.

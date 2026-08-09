@@ -52,17 +52,19 @@ environment variable.
 | `deepseek` | openai | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
 | `tencent-tokenhub` | openai | `https://tokenhub.tencentmaas.com/v1` | `TENCENT_TOKENHUB_API_KEY` |
 | `hy-tokenplan` | openai | `https://api.lkeap.cloud.tencent.com/plan/v3` | `TENCENT_HUNYUAN_TOKENPLAN_KEY` |
+| `iflytek` | openai | `https://spark-api-open.xf-yun.com/v1` | `SPARK_API_KEY` |
 | `kimi` | openai | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` |
 | `z-ai` | openai | `https://open.bigmodel.cn/api/paas/v4` | `Z_AI_API_KEY` |
 | `mimo` | openai | `https://api.xiaomimimo.com/v1` | `MIMO_API_KEY` |
-| `minimax` | openai | `https://api.minimaxi.com/v1` | `MINIMAX_API_KEY` |
+| `minimax` | openai | `https://api.minimax.io/v1` | `MINIMAX_GLOBAL_API_KEY` |
+| `minimax-cn` | openai | `https://api.minimaxi.com/v1` | `MINIMAX_API_KEY` |
 | `baidu-qianfan` | openai | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` |
 
 ### Custom providers
 
 Any provider name not in the table above is treated as custom and must
-supply at least `url` and `protocol` (`protocol` is either `anthropic` or
-`openai`):
+supply at least `url` and `protocol` (`protocol` is `anthropic`,
+`openai`, or `openai-responses`):
 
 ```bash
 ocr config set provider                             my-gateway
@@ -71,6 +73,83 @@ ocr config set custom_providers.my-gateway.protocol openai
 ocr config set custom_providers.my-gateway.model    llama-3-70b
 ocr config set custom_providers.my-gateway.api_key  "$MY_API_KEY"
 ```
+
+Use `openai-responses` when a provider or model requires the OpenAI
+Responses API (`/v1/responses`):
+
+```bash
+ocr config set provider                                               openai-responses-gateway
+ocr config set custom_providers.openai-responses-gateway.url          https://api.openai.com/v1
+ocr config set custom_providers.openai-responses-gateway.protocol     openai-responses
+ocr config set custom_providers.openai-responses-gateway.model        gpt-5
+ocr config set custom_providers.openai-responses-gateway.api_key      "$OPENAI_API_KEY"
+```
+
+The `url` can be either the API base URL or the full `/responses` endpoint — OCR normalizes it either way.
+
+A local model served by Ollama is just a custom provider pointing at the
+local OpenAI-compatible endpoint:
+
+```bash
+ocr config set provider                          ollama
+ocr config set custom_providers.ollama.url       http://127.0.0.1:11434/v1
+ocr config set custom_providers.ollama.protocol  openai
+ocr config set custom_providers.ollama.model     qwen3:32b
+ocr config set custom_providers.ollama.api_key   ollama
+```
+
+Ollama ignores the API key, but custom providers require a non-empty
+`api_key` (there is no environment-variable fallback for them), so set
+any placeholder value. The model itself must support native tool
+calling — see
+["No tool calls parsed" (local models / Ollama)](../faq/#no-tool-calls-parsed-local-models-ollama)
+in the FAQ before picking one.
+
+### Timeouts
+
+Each LLM request has an HTTP timeout, defaulting to **300 seconds**.
+Slow local models (or large files) can need more. Three knobs, in
+increasing scope:
+
+- `providers.<name>.timeout_sec` / `custom_providers.<name>.timeout_sec`
+  — per-provider, in seconds.
+- `llm.timeout_sec` — for the legacy `llm` section, in seconds.
+- `OCR_LLM_TIMEOUT` environment variable — integer seconds; overrides
+  the config-file value for every resolution path.
+
+The `timeout_sec` keys are not supported by `ocr config set` — edit
+`~/.opencodereview/config.json` directly:
+
+```json
+{
+  "custom_providers": {
+    "ollama": { "url": "http://127.0.0.1:11434/v1", "protocol": "openai", "timeout_sec": 900 }
+  }
+}
+```
+
+### Per-file prompt limit
+
+OCR defaults to a 58,888-token prompt ceiling for each file review. Increase
+it for a model with a larger context window by saving `max_tokens`:
+
+```bash
+ocr config set max_tokens 200000
+```
+
+The setting applies to both `ocr review` and `ocr scan`. Use `--max-tokens`
+for a one-off override without changing the saved configuration:
+
+```bash
+ocr review --max-tokens 200000
+ocr scan --max-tokens 200000
+```
+
+The per-run flag takes precedence over `max_tokens`; when neither is set, OCR
+uses the embedded task-template default. This limit is per file and is
+independent of both the model's output-token cap and `--max-tokens-budget`,
+which caps total token use for a run. Restore the embedded default with
+`ocr config unset max_tokens`.
 
 ### Verify connectivity
 
@@ -83,6 +162,24 @@ ocr llm test
 If you already have Claude Code's `ANTHROPIC_*` or OCR's own `OCR_LLM_*`
 environment variables configured, OCR picks them up automatically — no
 config file needed.
+
+### Using CC-Switch
+
+If you use [CC-Switch](https://github.com/farion1231/cc-switch) with its
+[routing service](https://www.ccswitch.io/en/docs?section=proxy&item=service)
+enabled, point the provider `url` at the local proxy — no other setup is
+required:
+
+```bash
+# Claude (Anthropic-compatible)
+ocr config set providers.anthropic.url http://127.0.0.1:15721
+
+# Codex / OpenAI-compatible — set that provider's url key instead
+ocr config set providers.<name>.url http://127.0.0.1:15721/v1
+```
+
+`api_key` can be any value. `extra_body` (and other per-provider fields)
+still apply as usual.
 
 ### Send vendor-specific fields
 

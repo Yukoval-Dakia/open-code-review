@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package agent
 
 import (
@@ -6,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/config/template"
-	"github.com/open-code-review/open-code-review/internal/config/toolsconfig"
-	"github.com/open-code-review/open-code-review/internal/llm"
-	"github.com/open-code-review/open-code-review/internal/model"
-	"github.com/open-code-review/open-code-review/internal/session"
-	"github.com/open-code-review/open-code-review/internal/tool"
+	"github.com/alibaba/open-code-review/internal/config/template"
+	"github.com/alibaba/open-code-review/internal/config/toolsconfig"
+	"github.com/alibaba/open-code-review/internal/llm"
+	"github.com/alibaba/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/session"
+	"github.com/alibaba/open-code-review/internal/tool"
 )
 
 type fakeAgentClient struct {
@@ -295,6 +298,119 @@ func TestFormatToolDefs(t *testing.T) {
 		}
 	})
 
+	t.Run("parameters preserve raw JSON order", func(t *testing.T) {
+		raw := json.RawMessage(`{
+			"name":"code_search",
+			"description":"Search code",
+			"parameters":{
+				"type":"object",
+				"properties":{
+					"query":{"description":"Query string"},
+					"path_glob":{"description":"Path glob"},
+					"case_sensitive":{"description":"Match case"},
+					"max_results":{"description":"Maximum results"}
+				},
+				"required":["query"]
+			}
+		}`)
+		defs := []llm.ToolDef{
+			{
+				Type: "function",
+				Function: llm.FunctionDef{
+					Name:          "code_search",
+					Description:   "Search code",
+					RawDefinition: raw,
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"query": map[string]any{
+								"description": "Query string",
+							},
+							"path_glob": map[string]any{
+								"description": "Path glob",
+							},
+							"case_sensitive": map[string]any{
+								"description": "Match case",
+							},
+							"max_results": map[string]any{
+								"description": "Maximum results",
+							},
+						},
+						"required": []any{"query"},
+					},
+				},
+			},
+		}
+
+		got := formatToolDefs(defs)
+		wantLines := []string{
+			"  - query: Query string (required)",
+			"  - path_glob: Path glob",
+			"  - case_sensitive: Match case",
+			"  - max_results: Maximum results",
+		}
+		last := -1
+		for _, line := range wantLines {
+			idx := strings.Index(got, line)
+			if idx == -1 {
+				t.Fatalf("missing parameter line %q in:\n%s", line, got)
+			}
+			if idx <= last {
+				t.Fatalf("parameter line %q is out of order in:\n%s", line, got)
+			}
+			last = idx
+		}
+	})
+
+	t.Run("fallback parameters are sorted when raw order is unavailable", func(t *testing.T) {
+		defs := []llm.ToolDef{
+			{
+				Type: "function",
+				Function: llm.FunctionDef{
+					Name:        "code_search",
+					Description: "Search code",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"query": map[string]any{
+								"description": "Query string",
+							},
+							"case_sensitive": map[string]any{
+								"description": "Match case",
+							},
+							"path_glob": map[string]any{
+								"description": "Path glob",
+							},
+							"max_results": map[string]any{
+								"description": "Maximum results",
+							},
+						},
+						"required": []any{"query"},
+					},
+				},
+			},
+		}
+
+		got := formatToolDefs(defs)
+		wantLines := []string{
+			"  - case_sensitive: Match case",
+			"  - max_results: Maximum results",
+			"  - path_glob: Path glob",
+			"  - query: Query string (required)",
+		}
+		last := -1
+		for _, line := range wantLines {
+			idx := strings.Index(got, line)
+			if idx == -1 {
+				t.Fatalf("missing parameter line %q in:\n%s", line, got)
+			}
+			if idx <= last {
+				t.Fatalf("parameter line %q is out of order in:\n%s", line, got)
+			}
+			last = idx
+		}
+	})
+
 	t.Run("tool without parameters", func(t *testing.T) {
 		defs := []llm.ToolDef{
 			{
@@ -396,6 +512,41 @@ func TestFilterLargeDiffs(t *testing.T) {
 	}
 }
 
+// exactNTokens builds a string that llm.CountTokens reports as exactly n
+// tokens, failing loudly if the tokenizer disagrees so fixture drift cannot
+// silently weaken the boundary assertions below.
+func exactNTokens(t *testing.T, n int) string {
+	t.Helper()
+	s := strings.TrimSpace(strings.Repeat("a ", n))
+	if got := llm.CountTokens(s); got != n {
+		t.Fatalf("fixture drift: llm.CountTokens(<%d-token string>) = %d, want %d", n, got, n)
+	}
+	return s
+}
+
+// TestFilterLargeDiffs_Boundary pins the 80% threshold exactly: with
+// MaxTokens=100 the limit is 80, so an 80-token diff is kept and an 81-token
+// one is dropped. TestFilterLargeDiffs above uses margins wide enough to pass
+// at any threshold, so it does not pin the value.
+func TestFilterLargeDiffs_Boundary(t *testing.T) {
+	a := New(Args{
+		Template: template.Template{MaxTokens: 100},
+	})
+
+	diffs := []model.Diff{
+		{NewPath: "at-limit.go", Diff: exactNTokens(t, 80)},
+		{NewPath: "over-limit.go", Diff: exactNTokens(t, 81)},
+	}
+
+	kept := a.filterLargeDiffs(diffs)
+	if len(kept) != 1 {
+		t.Fatalf("expected 1 kept diff, got %d", len(kept))
+	}
+	if kept[0].NewPath != "at-limit.go" {
+		t.Errorf("kept wrong file: got %s, want at-limit.go", kept[0].NewPath)
+	}
+}
+
 func TestFilterLargeDiffs_ZeroMaxTokens(t *testing.T) {
 	a := New(Args{
 		Template: template.Template{MaxTokens: 0},
@@ -461,6 +612,31 @@ func TestApplyResumeReusesCompletedItemsAcrossModels(t *testing.T) {
 	info := a.ResumeInfo()
 	if info == nil || info.ReusedFiles != 1 || info.RerunFiles != 1 || info.PreviousModel != "anthropic-model" || info.CurrentModel != "openai-model" {
 		t.Fatalf("ResumeInfo = %+v", info)
+	}
+}
+
+// TestAgentGettersNil covers the defensive early returns in the accessor
+// methods when the agent (or its session) was never fully constructed, so
+// callers never advertise a resume target that does not exist.
+func TestAgentGettersNil(t *testing.T) {
+	var nilAgent *Agent
+	if got := nilAgent.SessionID(); got != "" {
+		t.Errorf("nil agent SessionID = %q, want empty", got)
+	}
+	if got := nilAgent.RunManifest(); got != nil {
+		t.Errorf("nil agent RunManifest = %v, want nil", got)
+	}
+
+	// An agent with no session must also return the empty/nil sentinels.
+	empty := &Agent{}
+	if got := empty.SessionID(); got != "" {
+		t.Errorf("sessionless SessionID = %q, want empty", got)
+	}
+	if got := empty.RunManifest(); got != nil {
+		t.Errorf("sessionless RunManifest = %v, want nil", got)
+	}
+	if got := empty.ResumeInfo(); got != nil {
+		t.Errorf("resumeless ResumeInfo = %v, want nil", got)
 	}
 }
 
@@ -660,11 +836,15 @@ func TestDispatchSubtasks_MainTaskWithoutTaskDoneIsNotReusableCheckpoint(t *test
 	a.currentDate = "2025-06-26 10:00"
 
 	_, err := a.dispatchSubtasks(context.Background())
-	if err != nil {
-		t.Fatalf("dispatchSubtasks: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "all 1 file review(s) failed") {
+		t.Fatalf("expected all-failed error, got %v", err)
 	}
 	if client.calls != 1 {
 		t.Fatalf("LLM calls = %d, want 1", client.calls)
+	}
+	warnings := a.Warnings()
+	if len(warnings) != 1 || warnings[0].Type != "subtask_error" || warnings[0].File != diff.NewPath {
+		t.Fatalf("warnings = %+v, want one subtask_error for %s", warnings, diff.NewPath)
 	}
 	sess.Finalize()
 
@@ -688,6 +868,46 @@ func TestDispatchSubtasks_MainTaskWithoutTaskDoneIsNotReusableCheckpoint(t *test
 	}
 	if len(items) != 1 || items[0].Type != "failed" || !strings.Contains(items[0].Error, "main_task did not complete") {
 		t.Fatalf("items = %+v, want one incomplete-main failed item", items)
+	}
+}
+
+func TestDispatchSubtasks_IncompleteMainTaskMarksPartialFailure(t *testing.T) {
+	emptyContent := ""
+	client := &fakeAgentClient{responses: []*llm.ChatResponse{
+		agentTaskDoneResponse(),
+		{
+			Choices: []llm.Choice{{Message: llm.ResponseMessage{Content: &emptyContent}}},
+			Model:   "fake",
+			Usage:   &llm.UsageInfo{PromptTokens: 10, CompletionTokens: 1},
+		},
+	}}
+	a := New(Args{
+		From:           "main",
+		To:             "feature",
+		LLMClient:      client,
+		Model:          "fake",
+		MaxConcurrency: 1,
+		Template: template.Template{
+			MaxTokens:           100000,
+			MaxToolRequestTimes: 1,
+			MainTask: template.LlmConversation{
+				Messages: []template.ChatMessage{{Role: "user", Content: "Review {{diff}}"}},
+			},
+		},
+	})
+	a.diffs = []model.Diff{
+		{NewPath: "complete.go", OldPath: "complete.go", Diff: "+x", Insertions: 1},
+		{NewPath: "incomplete.go", OldPath: "incomplete.go", Diff: "+y", Insertions: 1},
+	}
+	a.currentDate = "2025-06-26 10:00"
+
+	_, err := a.dispatchSubtasks(context.Background())
+	if err != nil {
+		t.Fatalf("one completed file should keep the review partial, got %v", err)
+	}
+	warnings := a.Warnings()
+	if len(warnings) != 1 || warnings[0].Type != "subtask_error" || warnings[0].File != "incomplete.go" {
+		t.Fatalf("warnings = %+v, want one subtask_error for incomplete.go", warnings)
 	}
 }
 

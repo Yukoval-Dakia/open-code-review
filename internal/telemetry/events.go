@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package telemetry
 
 import (
@@ -13,7 +16,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/open-code-review/open-code-review/internal/stdout"
+	"github.com/alibaba/open-code-review/internal/stdout"
 )
 
 // Event emits a structured event as a span with immediate end.

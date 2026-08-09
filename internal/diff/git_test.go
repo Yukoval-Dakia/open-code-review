@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package diff
 
 import (
@@ -9,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/gitcmd"
+	"github.com/alibaba/open-code-review/internal/gitcmd"
 )
 
 // runGitTest runs a git command in dir and fails the test on error.
@@ -464,5 +467,74 @@ func TestRangeDiffSurvivesExternalDiffTool(t *testing.T) {
 		t.Fatalf("expected at least one parsed range diff with an external diff "+
 			"tool active, got 0 -- git diff range call site must pass "+
 			"--no-ext-diff (issue #82). GIT_EXTERNAL_DIFF=%s", garbage)
+	}
+}
+
+// TestCommitDiffMergeCommitReviewsFirstParentDiff covers `ocr review --commit
+// <merge>`: plain `git show` renders merge commits as a combined diff
+// ("diff --cc"), which ParseDiffText cannot parse, so the review silently
+// reported "No supported files changed" for exactly the commits whose
+// conflict resolutions most need review. The provider must pass
+// --diff-merges=first-parent so a merge is diffed against its first parent
+// in regular unified format.
+func TestCommitDiffMergeCommitReviewsFirstParentDiff(t *testing.T) {
+	repo := t.TempDir()
+	runGitTest(t, repo, "init", "-q")
+	runGitTest(t, repo, "config", "user.email", "test@example.com")
+	runGitTest(t, repo, "config", "user.name", "Test User")
+	runGitTest(t, repo, "config", "commit.gpgsign", "false")
+
+	file := filepath.Join(repo, "conflicted.txt")
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+			t.Fatalf("write conflicted.txt: %v", err)
+		}
+	}
+
+	write("line1\nline2\nline3\n")
+	runGitTest(t, repo, "add", "conflicted.txt")
+	runGitTest(t, repo, "commit", "-q", "-m", "initial commit")
+
+	runGitTest(t, repo, "checkout", "-q", "-b", "feature")
+	write("line1\nfeature-change\nline3\n")
+	runGitTest(t, repo, "commit", "-q", "-a", "-m", "feature change")
+
+	runGitTest(t, repo, "checkout", "-q", "-")
+	write("line1\nmain-change\nline3\n")
+	runGitTest(t, repo, "commit", "-q", "-a", "-m", "main change")
+
+	// The merge conflicts; resolving it produces the risky content to review.
+	mergeCmd := exec.Command("git", "merge", "--no-edit", "feature")
+	mergeCmd.Dir = repo
+	if out, err := mergeCmd.CombinedOutput(); err == nil {
+		t.Fatalf("expected merge to conflict, got success:\n%s", out)
+	}
+	write("line1\nresolved-conflict\nline3\n")
+	runGitTest(t, repo, "add", "conflicted.txt")
+	runGitTest(t, repo, "commit", "-q", "--no-edit")
+
+	runner := gitcmd.New(0)
+	provider := NewCommitProvider(repo, "HEAD", runner)
+
+	diffs, err := provider.GetDiff(context.Background())
+	if err != nil {
+		t.Fatalf("GetDiff (merge commit) returned error: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected exactly 1 diff for the merge commit, got %d: %+v", len(diffs), diffs)
+	}
+	d := diffs[0]
+	if d.NewPath != "conflicted.txt" {
+		t.Errorf("NewPath = %q, want conflicted.txt", d.NewPath)
+	}
+	if !strings.Contains(d.Diff, "+resolved-conflict") {
+		t.Errorf("diff does not contain the conflict resolution:\n%s", d.Diff)
+	}
+	if d.Insertions != 1 || d.Deletions != 1 {
+		t.Errorf("Insertions/Deletions = %d/%d, want 1/1", d.Insertions, d.Deletions)
+	}
+	if d.NewFileContent == "" {
+		t.Error("NewFileContent is empty: content was not read at the merge commit")
 	}
 }

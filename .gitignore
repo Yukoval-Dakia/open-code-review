@@ -6,7 +6,11 @@
 
 dist/
 npm/*/bin/
+coverage.out
+coverage.html
 .claude/plans
+.claude/commands/comment.md
+.claude/commands/read-issue.md
 .claude/settings.local.json
 
 CLAUDE.md
@@ -39,3 +43,6 @@ bin/opencodereview
 
 *.run.xml
 **/spoon.classpath.tmp
+# Python
+__pycache__/
+*.py[cod]

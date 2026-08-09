@@ -1,11 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package main
 
 import (
+	"io"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/llm"
+	"github.com/alibaba/open-code-review/internal/llm"
 )
 
 func TestSetConfigValueAuthHeaderNormalizesKnownValues(t *testing.T) {
@@ -47,6 +53,43 @@ func TestSetConfigValueModel(t *testing.T) {
 	}
 	if cfg.Model != "claude-opus-4-6" {
 		t.Errorf("Model = %q, want %q", cfg.Model, "claude-opus-4-6")
+	}
+}
+
+func TestSetConfigValueMaxTokens(t *testing.T) {
+	cfg := &Config{}
+
+	if err := setConfigValue(cfg, "max_tokens", "200000"); err != nil {
+		t.Fatalf("setConfigValue: %v", err)
+	}
+	if cfg.MaxTokens != 200000 {
+		t.Errorf("MaxTokens = %d, want 200000", cfg.MaxTokens)
+	}
+}
+
+func TestSetConfigValueMaxTokensRejectsInvalidValues(t *testing.T) {
+	for _, value := range []string{"0", "-1", "not-a-number"} {
+		t.Run(value, func(t *testing.T) {
+			if err := setConfigValue(&Config{}, "max_tokens", value); err == nil {
+				t.Fatalf("expected max_tokens=%q to be rejected", value)
+			}
+		})
+	}
+}
+
+func TestMaxTokensConfigRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := &Config{MaxTokens: 200000}
+
+	if err := saveConfig(path, cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	loaded, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig: %v", err)
+	}
+	if loaded.MaxTokens != 200000 {
+		t.Errorf("MaxTokens = %d, want 200000", loaded.MaxTokens)
 	}
 }
 
@@ -367,23 +410,30 @@ func TestSetConfigValueCustomProviderExtraHeaders(t *testing.T) {
 
 // --- unset tests ---
 
-func TestParseConfigArgsUnset(t *testing.T) {
-	action, err := parseConfigArgs([]string{"unset", "custom_providers.my-gateway"})
-	if err != nil {
-		t.Fatalf("parseConfigArgs: %v", err)
+func TestUnsetMaxTokens(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := &Config{Provider: "anthropic", MaxTokens: 200000}
+	if err := saveConfig(configPath, cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
 	}
-	if action.subCmd != "unset" {
-		t.Errorf("subCmd = %q, want %q", action.subCmd, "unset")
-	}
-	if action.key != "custom_providers.my-gateway" {
-		t.Errorf("key = %q, want %q", action.key, "custom_providers.my-gateway")
-	}
-}
 
-func TestParseConfigArgsUnsetMissingKey(t *testing.T) {
-	_, err := parseConfigArgs([]string{"unset"})
-	if err == nil {
-		t.Fatal("expected error for missing key")
+	if err := unsetMaxTokens(configPath); err != nil {
+		t.Fatalf("unsetMaxTokens: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(data), "max_tokens") {
+		t.Errorf("max_tokens should be omitted after unset: %s", data)
+	}
+	loaded, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if loaded.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic", loaded.Provider)
 	}
 }
 
@@ -939,6 +989,26 @@ func TestSetConfigValueUnknownKey(t *testing.T) {
 	}
 }
 
+func TestSetConfigValueUnknownKeyMessage(t *testing.T) {
+	// The unknown-key error message must stay byte-identical after extracting
+	// supportedConfigKeys, and must be generated from that list.
+	err := setConfigValue(&Config{}, "bogus.key", "val")
+	if err == nil {
+		t.Fatal("expected error for unknown key")
+	}
+	want := "unknown config key: bogus.key\n" +
+		"Supported keys: provider, model, max_tokens, providers.<name>.<field>, custom_providers.<name>.<field>, mcp_servers.<name>.<field>, llm.url, llm.auth_token, llm.auth_header, llm.model, llm.protocol, llm.codex_runtime, llm.claude_runtime, llm.use_anthropic, llm.extra_body, llm.extra_headers, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging\n" +
+		"Provider fields: api_key, url, protocol, model, models, auth_header, extra_body, extra_headers\n" +
+		"Protocol values: anthropic, openai, openai-responses, codex, claude\n" +
+		"MCP server fields: type, command, args, env, url, headers, tools, setup"
+	if err.Error() != want {
+		t.Errorf("unknown-key message drifted:\n got: %q\nwant: %q", err.Error(), want)
+	}
+	if !strings.Contains(err.Error(), strings.Join(supportedConfigKeys, ", ")) {
+		t.Error("message should be generated from supportedConfigKeys")
+	}
+}
+
 func TestSetConfigValueProviderClearsModel(t *testing.T) {
 	cfg := &Config{Provider: "old-provider", Model: "old-model"}
 	if err := setConfigValue(cfg, "provider", "new-provider"); err != nil {
@@ -950,12 +1020,113 @@ func TestSetConfigValueProviderClearsModel(t *testing.T) {
 }
 
 func TestRunConfigUnset_InvalidKey(t *testing.T) {
-	if err := runConfigUnset("provider"); err == nil {
-		t.Fatal("expected error for non custom_providers key")
-	}
 	if err := runConfigUnset("custom_providers."); err == nil {
 		t.Fatal("expected error for empty provider name")
 	}
+}
+
+func TestRunConfigSetWarnsWhenActiveProviderShadowsLegacyLLMConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath, err := defaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveConfig(configPath, &Config{Provider: "dashscope"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	stderr := captureConfigStderr(t, func() {
+		if err := runConfigSet("llm.url", "https://gateway.example/v1"); err != nil {
+			t.Fatalf("runConfigSet: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, `provider "dashscope" is active`) {
+		t.Errorf("warning = %q", stderr)
+	}
+	if !strings.Contains(stderr, "providers.dashscope.<field>") || !strings.Contains(stderr, "config unset provider") {
+		t.Errorf("warning does not explain how to resolve precedence: %q", stderr)
+	}
+
+	cfg, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if cfg.Llm.URL != "https://gateway.example/v1" {
+		t.Errorf("llm.url = %q", cfg.Llm.URL)
+	}
+}
+
+func TestLegacyLLMShadowWarning(t *testing.T) {
+	if got := legacyLLMShadowWarning("", "llm.model"); got != "" {
+		t.Errorf("warning without active provider = %q", got)
+	}
+	if got := legacyLLMShadowWarning("dashscope", "providers.dashscope.url"); got != "" {
+		t.Errorf("warning for provider setting = %q", got)
+	}
+	if got := legacyLLMShadowWarning("dashscope", "Llm.model"); got != "" {
+		t.Errorf("warning for invalid mixed-case legacy key = %q", got)
+	}
+	if got := legacyLLMShadowWarning("dashscope", "llm.model"); !strings.Contains(got, "providers.dashscope.<field>") {
+		t.Errorf("preset-provider warning = %q", got)
+	}
+	if got := legacyLLMShadowWarning("my-gateway", "llm.model"); !strings.Contains(got, "custom_providers.my-gateway.<field>") {
+		t.Errorf("custom-provider warning = %q", got)
+	}
+}
+
+func TestRunConfigUnsetProviderClearsSelectionAndKeepsProviderEntries(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath, err := defaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveConfig(configPath, &Config{
+		Provider: "dashscope",
+		Model:    "legacy-model",
+		Providers: map[string]ProviderEntry{
+			"dashscope": {APIKey: "secret", Model: "provider-model"},
+		},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	if err := runConfigUnset("provider"); err != nil {
+		t.Fatalf("runConfigUnset(provider): %v", err)
+	}
+	cfg, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if cfg.Provider != "" || cfg.Model != "" {
+		t.Errorf("provider/model = %q/%q, want both empty", cfg.Provider, cfg.Model)
+	}
+	if got := cfg.Providers["dashscope"].APIKey; got != "secret" {
+		t.Errorf("provider entry was removed or changed: api_key = %q", got)
+	}
+}
+
+func captureConfigStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
+
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func TestRunConfig_EmptyArgs(t *testing.T) {
@@ -1152,31 +1323,153 @@ func TestEnsureModelInList(t *testing.T) {
 	}
 }
 
-// --- codex provider tests (merged from fork) ---
-
-func TestSetConfigValueSupportsCodexProtocol(t *testing.T) {
-	cfg := &Config{}
-	if err := setConfigValue(cfg, "llm.protocol", "codex"); err != nil {
-		t.Fatalf("setConfigValue returned error: %v", err)
+// TestConfigRoundTripPreservesTimeoutSec guards against silent config loss:
+// the resolver reads providers.<name>.timeout_sec / llm.timeout_sec (the docs
+// tell users to hand-edit them), but the cmd-side Config struct used to lack
+// the field, so any loadOrCreateConfig + saveConfig cycle (every
+// `ocr config set`, `ocr config model`, interactive provider setup, ...)
+// silently dropped the key and reverted requests to the default timeout.
+func TestConfigRoundTripPreservesTimeoutSec(t *testing.T) {
+	configPath := t.TempDir() + "/config.json"
+	original := `{
+    "provider": "ollama",
+    "providers": {
+        "ollama": {
+            "url": "http://127.0.0.1:11434/v1",
+            "protocol": "openai",
+            "model": "qwen3",
+            "timeout_sec": 900
+        }
+    },
+    "custom_providers": {
+        "my-gateway": {
+            "url": "https://gw.example.com/v1",
+            "protocol": "openai",
+            "timeout_sec": 120
+        }
+    },
+    "llm": {
+        "timeout_sec": 60
+    }
+}`
+	if err := os.WriteFile(configPath, []byte(original), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
-	if cfg.Llm.Protocol != "codex" {
-		t.Fatalf("protocol = %q, want codex", cfg.Llm.Protocol)
+
+	// Emulate an unrelated `ocr config set` round-trip.
+	cfg, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadOrCreateConfig: %v", err)
+	}
+	if err := setConfigValue(cfg, "language", "Chinese"); err != nil {
+		t.Fatalf("setConfigValue: %v", err)
+	}
+	if err := saveConfig(configPath, cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+
+	reloaded, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.Providers["ollama"].TimeoutSec; got != 900 {
+		t.Errorf("providers.ollama.timeout_sec = %d, want 900 (lost in round-trip)", got)
+	}
+	if got := reloaded.CustomProviders["my-gateway"].TimeoutSec; got != 120 {
+		t.Errorf("custom_providers.my-gateway.timeout_sec = %d, want 120 (lost in round-trip)", got)
+	}
+	if got := reloaded.Llm.TimeoutSec; got != 60 {
+		t.Errorf("llm.timeout_sec = %d, want 60 (lost in round-trip)", got)
 	}
 }
 
-func TestSetConfigValueSupportsCodexRuntime(t *testing.T) {
+func TestSetMCPServerValue_Type(t *testing.T) {
 	cfg := &Config{}
-	if err := setConfigValue(cfg, "llm.codex_runtime", "app_server"); err != nil {
-		t.Fatalf("setConfigValue returned error: %v", err)
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.type", "remote"); err != nil {
+		t.Fatalf("setMCPServerValue: %v", err)
 	}
-	if cfg.Llm.CodexRuntime != "app_server" {
-		t.Fatalf("codex_runtime = %q, want app_server", cfg.Llm.CodexRuntime)
+	if cfg.MCPServers["gh"].Type != "remote" {
+		t.Errorf("Type = %q, want %q", cfg.MCPServers["gh"].Type, "remote")
 	}
 }
 
-func TestSetConfigValueRejectsInvalidCodexRuntime(t *testing.T) {
+func TestSetMCPServerValue_TypeInvalid(t *testing.T) {
 	cfg := &Config{}
-	if err := setConfigValue(cfg, "llm.codex_runtime", "websocket"); err == nil {
-		t.Fatalf("expected error for invalid llm.codex_runtime value, got nil")
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.type", "invalid"); err == nil {
+		t.Fatal("expected error for invalid type, got nil")
+	}
+}
+
+func TestSetMCPServerValue_URL(t *testing.T) {
+	cfg := &Config{}
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.url", "https://api.example.com/mcp"); err != nil {
+		t.Fatalf("setMCPServerValue: %v", err)
+	}
+	if cfg.MCPServers["gh"].URL != "https://api.example.com/mcp" {
+		t.Errorf("URL = %q, want %q", cfg.MCPServers["gh"].URL, "https://api.example.com/mcp")
+	}
+}
+
+func TestSetMCPServerValue_URLEmpty(t *testing.T) {
+	cfg := &Config{}
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.url", ""); err == nil {
+		t.Fatal("expected error for empty URL, got nil")
+	}
+}
+
+func TestSetMCPServerValue_URLInvalidScheme(t *testing.T) {
+	cfg := &Config{}
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.url", "ftp://example.com/mcp"); err == nil {
+		t.Fatal("expected error for non-http scheme, got nil")
+	}
+}
+
+func TestSetMCPServerValue_Headers(t *testing.T) {
+	cfg := &Config{}
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.headers", `{"Authorization":"Bearer $TOKEN","X-Custom":"val"}`); err != nil {
+		t.Fatalf("setMCPServerValue: %v", err)
+	}
+	h := cfg.MCPServers["gh"].Headers
+	if h["Authorization"] != "Bearer $TOKEN" {
+		t.Errorf("Authorization = %q, want %q", h["Authorization"], "Bearer $TOKEN")
+	}
+	if h["X-Custom"] != "val" {
+		t.Errorf("X-Custom = %q, want %q", h["X-Custom"], "val")
+	}
+}
+
+func TestSetMCPServerValue_URLNoHost(t *testing.T) {
+	cfg := &Config{}
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.url", "http://"); err == nil {
+		t.Fatal("expected error for URL without host, got nil")
+	}
+}
+
+func TestSetMCPServerValue_URLParseError(t *testing.T) {
+	cfg := &Config{}
+	// "://bad" has no scheme, so url.Parse itself fails before the scheme check.
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.url", "://bad"); err == nil {
+		t.Fatal("expected error for unparseable URL, got nil")
+	}
+}
+
+func TestSetMCPServerValue_HeadersEmptyName(t *testing.T) {
+	cfg := &Config{}
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.headers", `{"":"val"}`); err == nil {
+		t.Fatal("expected error for empty header name, got nil")
+	}
+}
+
+func TestSetMCPServerValue_HeadersInvalidJSON(t *testing.T) {
+	cfg := &Config{}
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.headers", "not-json"); err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestSetMCPServerValue_HeadersEmptyValue(t *testing.T) {
+	cfg := &Config{}
+	if err := setMCPServerValue(cfg, "mcp_servers.gh.headers", `{"Authorization":""}`); err == nil {
+		t.Fatal("expected error for empty header value, got nil")
 	}
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package main
 
 import (
@@ -7,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/open-code-review/open-code-review/internal/learn"
-	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/learn"
+	"github.com/alibaba/open-code-review/internal/model"
 )
 
 // defaultReflagThreshold is the cosine similarity at or above which a freshly
@@ -67,8 +70,17 @@ func (r reflagSuppressor) apply(ctx context.Context, comments []model.LlmComment
 			kept = append(kept, c)
 			continue
 		}
-		best, ok := r.store.BestRejected(vec)
-		if ok && best.Score >= r.threshold && pathMatches(best.Learning.Path, c.Path) {
+		suppressed := false
+		for _, match := range r.store.TopRejected(vec, 0) {
+			if match.Score < r.threshold {
+				break
+			}
+			if pathMatches(match.Learning.Path, c.Path) {
+				suppressed = true
+				break
+			}
+		}
+		if suppressed {
 			dropped++
 			continue
 		}

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 // Package llm provides LLM client interfaces supporting multiple protocols.
 // Supported protocols (canonical names, see protocol.go):
 //   - "anthropic" — Anthropic Messages API
@@ -8,7 +11,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -175,9 +180,10 @@ type ToolDef struct {
 
 // FunctionDef specifies the metadata for a tool definition.
 type FunctionDef struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Parameters    map[string]any  `json:"parameters"`
+	RawDefinition json.RawMessage `json:"-"`
 }
 
 // ClientConfig holds configuration for connecting to an LLM service.
@@ -352,6 +358,15 @@ func (c *OpenAIClient) CompletionsWithCtx(ctx context.Context, req ChatRequest) 
 
 	var opts []openaiopt.RequestOption
 	for k, v := range c.cfg.ExtraBody {
+		// Skip the "stream" key here. The streaming decision below uses a
+		// dedicated boolean check, and when streaming is enabled the SDK's
+		// NewStreaming method sets stream=true on the wire itself. When
+		// streaming is NOT enabled, leaving the key in the body would make
+		// the API answer with text/event-stream and the non-streaming path
+		// fails to decode (see issue #647).
+		if k == "stream" {
+			continue
+		}
 		opts = append(opts, openaiopt.WithJSONSet(k, v))
 	}
 	if stream, ok := c.cfg.ExtraBody["stream"].(bool); ok && stream {
@@ -359,6 +374,23 @@ func (c *OpenAIClient) CompletionsWithCtx(ctx context.Context, req ChatRequest) 
 	}
 
 	sdkResp, err := c.sdk.Chat.Completions.New(ctx, params, opts...)
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		retryResp, retryErr := c.sdk.Chat.Completions.New(ctx, params, opts...)
+		if retryErr == nil {
+			sdkResp = retryResp
+			err = nil
+		} else {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			if !errors.Is(retryErr, io.ErrUnexpectedEOF) {
+				err = retryErr
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -638,6 +670,13 @@ func (c *AnthropicClient) CompletionsWithCtx(ctx context.Context, req ChatReques
 
 	var opts []option.RequestOption
 	for k, v := range c.cfg.ExtraBody {
+		// This client is non-streaming: it calls Messages.New, which expects a
+		// single JSON body. If a provider config sets extra_body.stream=true,
+		// forwarding it here makes the API answer with SSE and every call fails
+		// to decode. Drop the key rather than forward it.
+		if k == "stream" {
+			continue
+		}
 		opts = append(opts, option.WithJSONSet(k, v))
 	}
 
@@ -691,6 +730,11 @@ func (c *AnthropicClient) buildAnthropicParams(model string, req ChatRequest) (a
 				if tc.Function.Arguments != "" {
 					if err := json.Unmarshal([]byte(tc.Function.Arguments), &argsMap); err != nil {
 						return anthropic.MessageNewParams{}, fmt.Errorf("invalid tool call arguments for %s: %w", tc.Function.Name, err)
+					}
+					if argsMap == nil {
+						// null arguments → empty map; Anthropic API rejects
+						// null input (#382). Same guard as llmloop.parseToolArgs.
+						argsMap = map[string]any{}
 					}
 				}
 				blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, argsMap, tc.Function.Name))

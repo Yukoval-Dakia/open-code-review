@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package learn
 
 import (
@@ -9,6 +12,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("OCR_LEARNINGS", "")
 	t.Setenv("OCR_LEARNINGS_FEEDBACK", "")
 	t.Setenv("OCR_EMBED_URL", "")
+	t.Setenv("OCR_EMBED_TOKEN", "")
 	t.Setenv("OCR_EMBED_MODEL", "")
 	c := LoadConfig()
 	if !c.Enabled {
@@ -20,10 +24,14 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if c.EmbedModel != "embedding-3" {
 		t.Fatalf("EmbedModel default wrong: %s", c.EmbedModel)
 	}
+	if c.EmbedToken != "" {
+		t.Fatal("EmbedToken must not inherit unrelated provider credentials")
+	}
 }
 
 func TestLoadConfigOffAndOverrides(t *testing.T) {
 	t.Setenv("OCR_LEARNINGS", "off")
+	t.Setenv("OCR_EMBED_TOKEN", "embedding-token")
 	t.Setenv("OCR_EMBED_MODEL", "embedding-2")
 	c := LoadConfig()
 	if c.Enabled {
@@ -31,6 +39,9 @@ func TestLoadConfigOffAndOverrides(t *testing.T) {
 	}
 	if c.EmbedModel != "embedding-2" {
 		t.Fatalf("override ignored: %s", c.EmbedModel)
+	}
+	if c.EmbedToken != "embedding-token" {
+		t.Fatalf("token override ignored: %s", c.EmbedToken)
 	}
 }
 

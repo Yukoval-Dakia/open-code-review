@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package llm
 
 import (
@@ -17,7 +20,8 @@ type ResolvedEndpoint struct {
 	URL          string
 	Token        string
 	Model        string
-	Protocol     string            // canonical protocol (see protocol.go); resolver normalizes aliases
+	Provider     string
+	Protocol     string            // canonical protocol name (see protocol.go); resolver normalizes aliases
 	AuthHeader   string            // Anthropic auth header: "x-api-key" or "authorization"
 	Source       string            // human-readable config source label
 	ExtraBody    map[string]any    // vendor-specific request body fields
@@ -40,8 +44,8 @@ const (
 	// openai | openai-responses). Takes priority
 	// over OCR_USE_ANTHROPIC when set.
 	envOCRLLMProtocol = "OCR_LLM_PROTOCOL"
-	// envOCRLLMTimeout is a global override applied in ResolveEndpointWithModelOverride
-	// after any strategy resolves, rather than inside tryOCREnv like other OCR_LLM_* vars.
+	// envOCRLLMTimeout is a global override applied by finalizeResolvedEndpoint after
+	// ResolveEndpointWithOptions selects a strategy, rather than inside tryOCREnv like other OCR_LLM_* vars.
 	// This lets it override timeout for all resolution paths (OCR env, config file,
 	// provider config, Claude Code env, shell RC).
 	envOCRLLMTimeout    = "OCR_LLM_TIMEOUT"
@@ -57,75 +61,67 @@ const (
 	envCCModel   = "ANTHROPIC_MODEL"
 )
 
-// ResolveEndpoint reads from 4 strategy sources in priority order.
-// Each strategy requires all three fields (URL, Token, Model) to be non-empty.
-// Returns the first valid strategy's result.
-func ResolveEndpoint(configPath string) (ResolvedEndpoint, error) {
-	return ResolveEndpointWithModelOverride(configPath, "")
+// ResolveOptions controls per-run endpoint resolution overrides.
+type ResolveOptions struct {
+	Provider string
+	Model    string
 }
 
-// ResolveEndpointWithModelOverride resolves an endpoint like ResolveEndpoint,
-// but uses modelOverride as the request model when it is non-empty. The override
-// can also supply the otherwise required model for a configured endpoint.
+// ResolveEndpoint resolves an endpoint without per-run overrides.
+func ResolveEndpoint(configPath string) (ResolvedEndpoint, error) {
+	return ResolveEndpointWithOptions(configPath, ResolveOptions{})
+}
+
+// ResolveEndpointWithModelOverride is a compatibility wrapper around
+// ResolveEndpointWithOptions for callers that only override the model.
 func ResolveEndpointWithModelOverride(configPath, modelOverride string) (ResolvedEndpoint, error) {
-	modelOverride = strings.TrimSpace(modelOverride)
+	return ResolveEndpointWithOptions(configPath, ResolveOptions{Model: modelOverride})
+}
+
+// ResolveEndpointWithOptions resolves an endpoint by first honoring an explicit
+// provider selection. Otherwise it processes config, environment, then shell RC
+// strategies in priority order, finalizing the first complete endpoint.
+func ResolveEndpointWithOptions(configPath string, opts ResolveOptions) (ResolvedEndpoint, error) {
+	opts.Provider = strings.TrimSpace(opts.Provider)
+	opts.Model = strings.TrimSpace(opts.Model)
+	if opts.Provider != "" {
+		ep, ok, err := tryOCRConfig(configPath, opts)
+		if err != nil {
+			return ResolvedEndpoint{}, fmt.Errorf("resolve OCR config file: %w", err)
+		}
+		if !ok {
+			section := "custom_providers"
+			if _, isPreset := LookupProvider(opts.Provider); isPreset {
+				section = "providers"
+			}
+			return ResolvedEndpoint{}, fmt.Errorf("resolve OCR config file: provider %q is not configured in %s section because the config file does not exist", opts.Provider, section)
+		}
+		return finalizeResolvedEndpoint("OCR config file", ep)
+	}
 
 	strategies := []struct {
 		name string
 		fn   func() (ResolvedEndpoint, bool, error)
 	}{
-		{"OCR config file", func() (ResolvedEndpoint, bool, error) { return tryOCRConfig(configPath, modelOverride) }},
-		{"OCR environment", func() (ResolvedEndpoint, bool, error) { return tryOCREnv(modelOverride) }},
-		{"Claude Code environment", func() (ResolvedEndpoint, bool, error) { return tryCCEnv(modelOverride) }},
-		{"Shell rc file", func() (ResolvedEndpoint, bool, error) { return tryShellRC(modelOverride) }},
+		{"OCR config file", func() (ResolvedEndpoint, bool, error) { return tryOCRConfig(configPath, opts) }},
+		{"OCR environment", func() (ResolvedEndpoint, bool, error) { return tryOCREnv(opts.Model) }},
+		{"Claude Code environment", func() (ResolvedEndpoint, bool, error) { return tryCCEnv(opts.Model) }},
+		{"Shell rc file", func() (ResolvedEndpoint, bool, error) { return tryShellRC(opts.Model) }},
 	}
-
-	// An explicit OCR_LLM_PROTOCOL is a deliberate per-invocation override
-	// (e.g. CI pipelines); it must not be shadowed by a persistent config
-	// file, so the environment strategy is promoted ahead of it. For codex
-	// the env endpoint is complete by itself; for openai/anthropic the env
-	// strategy itself enforces that URL/token/model are also provided.
-	if strings.TrimSpace(os.Getenv(envOCRLLMProtocol)) != "" {
+	// An explicit protocol is an invocation-level override and must not be
+	// shadowed by persistent config (notably for tokenless CLI providers).
+	envProtocol := NormalizeProtocol(os.Getenv(envOCRLLMProtocol))
+	if envProtocol == ProtocolCodex || envProtocol == ProtocolClaude {
 		strategies[0], strategies[1] = strategies[1], strategies[0]
 	}
 
-	for _, s := range strategies {
-		ep, ok, err := s.fn()
+	for _, strategy := range strategies {
+		ep, ok, err := strategy.fn()
 		if err != nil {
-			return ResolvedEndpoint{}, fmt.Errorf("resolve %s: %w", s.name, err)
+			return ResolvedEndpoint{}, fmt.Errorf("resolve %s: %w", strategy.name, err)
 		}
 		if ok && endpointComplete(ep) {
-			if ep.Source == "" {
-				ep.Source = s.name
-			}
-			ep.Model = stripModelSuffix(ep.Model)
-			// OCR_LLM_TIMEOUT is a global override: applies regardless of
-			// which strategy resolved the endpoint, and takes precedence
-			// over config-file values when set.
-			envTimeout, ok, err := parseTimeoutEnv()
-			if err != nil {
-				return ResolvedEndpoint{}, fmt.Errorf("resolve %s: %w", s.name, err)
-			}
-			if ok {
-				ep.Timeout = envTimeout
-			}
-			// OCR_LLM_EXTRA_HEADERS is a global override: merges into
-			// extra headers regardless of which strategy resolved the
-			// endpoint. Env values take precedence over config-file values.
-			if raw := os.Getenv(envOCRLLMExtraHeaders); raw != "" {
-				envHeaders, err := ParseExtraHeaders(raw)
-				if err != nil {
-					return ResolvedEndpoint{}, fmt.Errorf("resolve %s: %w", s.name, err)
-				}
-				if ep.ExtraHeaders == nil {
-					ep.ExtraHeaders = envHeaders
-				} else {
-					for k, v := range envHeaders {
-						ep.ExtraHeaders[k] = v
-					}
-				}
-			}
-			return ep, nil
+			return finalizeResolvedEndpoint(strategy.name, ep)
 		}
 	}
 
@@ -137,6 +133,34 @@ func endpointComplete(ep ResolvedEndpoint) bool {
 		return true
 	}
 	return ep.URL != "" && ep.Token != "" && ep.Model != ""
+}
+
+func finalizeResolvedEndpoint(source string, ep ResolvedEndpoint) (ResolvedEndpoint, error) {
+	if ep.Source == "" {
+		ep.Source = source
+	}
+	ep.Model = stripModelSuffix(ep.Model)
+	envTimeout, ok, err := parseTimeoutEnv()
+	if err != nil {
+		return ResolvedEndpoint{}, fmt.Errorf("resolve %s: %w", source, err)
+	}
+	if ok {
+		ep.Timeout = envTimeout
+	}
+	if raw := os.Getenv(envOCRLLMExtraHeaders); raw != "" {
+		envHeaders, err := ParseExtraHeaders(raw)
+		if err != nil {
+			return ResolvedEndpoint{}, fmt.Errorf("resolve %s: %w", source, err)
+		}
+		if ep.ExtraHeaders == nil {
+			ep.ExtraHeaders = envHeaders
+		} else {
+			for key, value := range envHeaders {
+				ep.ExtraHeaders[key] = value
+			}
+		}
+	}
+	return ep, nil
 }
 
 // parseTimeoutEnv reads and validates the OCR_LLM_TIMEOUT environment variable.
@@ -283,7 +307,7 @@ type configFile struct {
 }
 
 // tryOCRConfig reads the OCR config file.
-func tryOCRConfig(path, modelOverride string) (ResolvedEndpoint, bool, error) {
+func tryOCRConfig(path string, opts ResolveOptions) (ResolvedEndpoint, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -297,11 +321,17 @@ func tryOCRConfig(path, modelOverride string) (ResolvedEndpoint, bool, error) {
 		return ResolvedEndpoint{}, false, fmt.Errorf("parse config: %w", err)
 	}
 
+	if opts.Provider != "" {
+		if opts.Provider != cfg.Provider {
+			cfg.Model = ""
+		}
+		cfg.Provider = opts.Provider
+	}
 	if cfg.Provider != "" {
-		return tryProviderConfig(cfg, modelOverride)
+		return tryProviderConfig(cfg, opts.Model)
 	}
 
-	return tryLegacyLlmConfig(cfg, modelOverride)
+	return tryLegacyLlmConfig(cfg, opts.Model)
 }
 
 // tryProviderConfig resolves an endpoint from the provider-based configuration.
@@ -435,6 +465,7 @@ func tryProviderConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, 
 		URL:          url,
 		Token:        apiKey,
 		Model:        model,
+		Provider:     cfg.Provider,
 		Protocol:     protocol,
 		AuthHeader:   authHeader,
 		Source:       "provider:" + cfg.Provider,
@@ -804,8 +835,16 @@ func splitHeaderPairs(raw string) ([]string, error) {
 // ensureMessagesSuffix appends /v1/messages to base URLs that lack a versioned path.
 func ensureMessagesSuffix(rawURL string) string {
 	u := strings.TrimRight(rawURL, "/")
+	// Already ends with the full messages path — don't modify.
+	if strings.HasSuffix(u, "/v1/messages") {
+		return rawURL
+	}
+	// Ends with /v1 (e.g. "https://api.anthropic.com/v1") — only append /messages.
+	if strings.HasSuffix(u, "/v1") {
+		return u + "/messages"
+	}
+	// URL has /v1/ in the middle (e.g. /v1/anthropic) — already versioned, leave it alone.
 	if strings.Contains(u, "/v1/") {
-		// Already has versioned path — don't modify.
 		return rawURL
 	}
 	return u + "/v1/messages"

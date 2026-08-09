@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 // internal/impact/ts_refs.js
 // Reads a JSON request on stdin, writes a JSON response on stdout.
 // Request:  {mode:"symbols", content, changed:[lineNums]} |

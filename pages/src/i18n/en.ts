@@ -1,6 +1,7 @@
-import { TranslationKeys } from './types';
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
 
-export const en: TranslationKeys = {
+export const en = {
   // Navbar
   'navbar.features': 'Features',
   'navbar.benchmark': 'Benchmark',
@@ -17,6 +18,10 @@ export const en: TranslationKeys = {
   'hero.terminal': 'Terminal',
   'hero.copied': 'Copied!',
   'hero.copyFailed': 'Copy failed',
+
+  // Error boundary
+  'error.pageLoadFailed': 'Failed to load this page.',
+  'error.reload': 'Reload',
 
   // Highlights
   'highlights.stat1Value': '20K+',
@@ -291,4 +296,4 @@ export const en: TranslationKeys = {
   'blog.noPostsForTag': 'No posts found for this tag.',
   'blog.search.placeholder': 'Search posts...',
   'blog.search.noResults': 'No results found',
-};
+} as const;

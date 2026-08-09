@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package tool
 
 import (
@@ -9,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/open-code-review/open-code-review/internal/diff"
+	"github.com/alibaba/open-code-review/internal/diff"
 )
 
 const (

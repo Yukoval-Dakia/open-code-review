@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 // internal/impact/crossref_test.go
 package impact
 
@@ -9,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/reviewctx"
+	"github.com/alibaba/open-code-review/internal/reviewctx"
 )
 
 func gitInit(t *testing.T, dir string, files map[string]string) {
@@ -51,6 +54,9 @@ func TestCrossRefProviderGoImpact(t *testing.T) {
 	}
 	if !strings.Contains(out, "Foo") || !strings.Contains(out, "caller.go") {
 		t.Fatalf("expected impact mentioning Foo in caller.go, got:\n%s", out)
+	}
+	if !strings.Contains(out, "<cross_reference_impact>") {
+		t.Fatalf("expected semantic prompt wrapper, got:\n%s", out)
 	}
 }
 

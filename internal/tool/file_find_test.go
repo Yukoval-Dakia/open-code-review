@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package tool
 
 import (
@@ -8,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/gitcmd"
+	"github.com/alibaba/open-code-review/internal/gitcmd"
 )
 
 // TestFileFind_NonGitDirectoryFallback verifies file_find works in a plain

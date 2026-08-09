@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 import { t, resolveLocale } from '../../shared/i18n';
 import * as vscode from 'vscode';
 import { readFile } from 'fs/promises';
@@ -149,7 +152,8 @@ export class GitService {
 
     try {
       const [diffHeadOut, untrackedOut] = await Promise.all([
-        runGit(root, ['diff', '--name-status', 'HEAD']),
+        // HEAD does not exist before the first commit; fall back to the index below.
+        runGit(root, ['diff', '--name-status', 'HEAD']).catch(() => ''),
         runGit(root, ['ls-files', '--others', '--exclude-standard']),
       ]);
       let diffCachedOut = '';

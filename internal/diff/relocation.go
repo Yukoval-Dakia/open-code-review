@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package diff
 
 import (
@@ -6,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/open-code-review/open-code-review/internal/config/template"
-	"github.com/open-code-review/open-code-review/internal/llm"
-	"github.com/open-code-review/open-code-review/internal/model"
-	"github.com/open-code-review/open-code-review/internal/stdout"
-	"github.com/open-code-review/open-code-review/internal/telemetry"
+	"github.com/alibaba/open-code-review/internal/config/template"
+	"github.com/alibaba/open-code-review/internal/llm"
+	"github.com/alibaba/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/stdout"
+	"github.com/alibaba/open-code-review/internal/telemetry"
 )
 
 // ReLocateComment calls the LLM to regenerate a precise existing_code snippet
@@ -28,12 +31,6 @@ func ReLocateComment(
 ) (bool, *llm.ChatResponse, []llm.Message) {
 	if task == nil || len(task.Messages) == 0 {
 		return false, nil, nil
-	}
-
-	if task.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(task.Timeout)*time.Second)
-		defer cancel()
 	}
 
 	messages := make([]llm.Message, 0, len(task.Messages))

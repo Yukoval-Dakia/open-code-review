@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package main
 
 import (
@@ -5,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/model"
 )
 
 // severityRank maps a self-assessed severity label to an ordinal for threshold

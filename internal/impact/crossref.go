@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 // internal/impact/crossref.go
 package impact
 
@@ -11,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/open-code-review/open-code-review/internal/reviewctx"
+	"github.com/alibaba/open-code-review/internal/reviewctx"
 )
 
 const (
@@ -117,7 +120,7 @@ func (p *CrossRefProvider) Context(ctx context.Context, in reviewctx.FileReviewI
 	if len(results) == 0 {
 		return "", nil
 	}
-	return renderSummary(results, truncated), nil
+	return "<cross_reference_impact>\n" + renderSummary(results, truncated) + "\n</cross_reference_impact>", nil
 }
 
 // findRefs greps for candidate files then confirms via the analyzer.

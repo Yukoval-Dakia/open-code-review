@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package diff
 
 import (
@@ -5,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/open-code-review/open-code-review/internal/pathutil"
+	"github.com/alibaba/open-code-review/internal/pathutil"
 )
 
 func readWorkspaceFileForDiff(repoDir, relPath string) ([]byte, error) {

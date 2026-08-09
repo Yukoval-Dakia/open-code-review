@@ -18,11 +18,13 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'alibaba/open-code-review'
     runs-on: self-hosted
+    timeout-minutes: 10
     container:
       image: node:24
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Trust workspace
         run: git config --global --replace-all safe.directory '*'
@@ -41,19 +43,21 @@ jobs:
           cp -r pages/dist/* _site/
           cp pages/logo.svg _site/logo.svg
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
   deploy:
+    if: github.repository == 'alibaba/open-code-review'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: self-hosted
+    timeout-minutes: 15
     container:
       image: node:24
     needs: build
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package learn
 
 import (
@@ -80,5 +83,26 @@ func TestIngestMissingFileIsNoError(t *testing.T) {
 	added, err := Ingest(context.Background(), store, &stubEmbedder{}, filepath.Join(t.TempDir(), "nope.json"), "t0")
 	if err != nil || added != 0 {
 		t.Fatalf("missing feedback should be a clean no-op: added=%d err=%v", added, err)
+	}
+}
+
+func TestIngestUpdatesFinalVerdictWithoutReembeddingUnchangedBody(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := OpenStore(filepath.Join(dir, "s.jsonl"), 100)
+	emb := &stubEmbedder{vec: []float32{1, 0}}
+	fp := writeFeedback(t, dir, `[{"comment_id":"c1","body":"possible race","path":"a.go","verdict":"rejected"}]`)
+	if changed, err := Ingest(context.Background(), store, emb, fp, "t0"); err != nil || changed != 1 {
+		t.Fatalf("initial ingest: changed=%d err=%v", changed, err)
+	}
+	fp = writeFeedback(t, dir, `[{"comment_id":"c1","body":"possible race","path":"a.go","verdict":"accepted"}]`)
+	if changed, err := Ingest(context.Background(), store, emb, fp, "t1"); err != nil || changed != 1 {
+		t.Fatalf("final ingest: changed=%d err=%v", changed, err)
+	}
+	got, ok := store.Get("c1")
+	if !ok || got.Verdict != VerdictAccepted || got.CreatedAt != "t0" {
+		t.Fatalf("updated learning = %+v, want accepted with original timestamp", got)
+	}
+	if emb.calls != 1 {
+		t.Fatalf("verdict-only update re-embedded body: calls=%d", emb.calls)
 	}
 }

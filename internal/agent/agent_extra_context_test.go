@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package agent
 
 import (
@@ -5,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/reviewctx"
+	"github.com/alibaba/open-code-review/internal/reviewctx"
 )
 
 type fakeProvider struct{ out string }
@@ -21,12 +24,12 @@ func TestRenderExtraContextSubstitutes(t *testing.T) {
 	if !strings.Contains(got, "IMPACT-BLOCK") {
 		t.Fatalf("extra context = %q, want it to contain IMPACT-BLOCK", got)
 	}
-	if !strings.Contains(got, "<cross_reference_impact>") {
+	if !strings.Contains(got, "<additional_review_context>") {
 		t.Fatalf("non-empty extra context should be wrapped, got %q", got)
 	}
 }
 
-// An empty provider output must yield "" — no dangling <cross_reference_impact>
+// An empty provider output must yield "" — no dangling context
 // tags in the prompt for files with nothing to add.
 func TestRenderExtraContextEmptyHasNoWrapper(t *testing.T) {
 	a := &Agent{ctxProviders: []reviewctx.ContextProvider{fakeProvider{out: "  "}}}

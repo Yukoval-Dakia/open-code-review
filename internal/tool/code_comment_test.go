@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package tool
 
 import (
@@ -6,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/model"
 )
 
 func TestParseComments(t *testing.T) {
@@ -192,6 +195,64 @@ func TestParseComments_CategorySeverity(t *testing.T) {
 			t.Errorf("severity = %q, want empty", comments[0].Severity)
 		}
 	})
+
+	t.Run("normalizes casing", func(t *testing.T) {
+		args := map[string]any{
+			"path": "main.go",
+			"comments": []any{
+				map[string]any{
+					"content":       "Potential nil pointer dereference.",
+					"existing_code": "x := *p",
+					"category":      "Security",
+					"severity":      "Critical",
+				},
+			},
+		}
+		comments, errMsg := ParseComments(args)
+		if errMsg != "" {
+			t.Fatalf("unexpected error message: %s", errMsg)
+		}
+		if len(comments) != 1 {
+			t.Fatalf("expected 1 comment, got %d", len(comments))
+		}
+		if got := comments[0].Category; got != "security" {
+			t.Errorf("category = %q, want %q", got, "security")
+		}
+		if got := comments[0].Severity; got != "critical" {
+			t.Errorf("severity = %q, want %q", got, "critical")
+		}
+	})
+}
+
+func TestParseComments_CategorySeveritySchemaDrift(t *testing.T) {
+	args := map[string]any{
+		"path": "main.go",
+		"comments": []any{
+			map[string]any{
+				"content":       "Use the canonical metadata fallback.",
+				"existing_code": "value := compute()",
+				"category":      "correctness",
+				"severity":      "info",
+			},
+		},
+	}
+
+	comments, errMsg := ParseComments(args)
+	if errMsg != "" {
+		t.Fatalf("unexpected error message: %s", errMsg)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(comments))
+	}
+	if got := comments[0].Category; got != "other" {
+		t.Errorf("category = %q, want %q", got, "other")
+	}
+	if got := comments[0].Severity; got != "low" {
+		t.Errorf("severity = %q, want %q", got, "low")
+	}
+	if got := comments[0].Content; got != "Use the canonical metadata fallback." {
+		t.Errorf("content = %q", got)
+	}
 }
 
 // TestLlmComment_JSONCategorySeverity verifies category and severity serialize as

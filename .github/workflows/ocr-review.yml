@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 alibaba/open-code-review Contributors
 # OpenCodeReview - PR Auto-Review (self-hosted runner + opencode-go API)
 #
 # Runs on a self-hosted macOS runner where:
@@ -96,6 +98,9 @@ jobs:
           # Learnings ingestion: feed the collector's feedback.json to OCR.
           OCR_LEARNINGS: on
           OCR_LEARNINGS_FEEDBACK: ${{ steps.collect-feedback.outputs.feedback_path }}
+          OCR_EMBED_URL: ${{ vars.OCR_EMBED_URL }}
+          OCR_EMBED_TOKEN: ${{ secrets.OCR_EMBED_TOKEN }}
+          OCR_EMBED_MODEL: ${{ vars.OCR_EMBED_MODEL }}
         run: |
           # Get base and head refs from PR context (different for comment triggers)
           if [ "${{ github.event_name }}" = "pull_request" ]; then

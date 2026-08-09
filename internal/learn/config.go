@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package learn
 
 import (
@@ -15,6 +18,7 @@ type LearningsConfig struct {
 	Enabled      bool
 	FeedbackPath string
 	EmbedURL     string
+	EmbedToken   string
 	EmbedModel   string
 }
 
@@ -24,6 +28,7 @@ func LoadConfig() LearningsConfig {
 		Enabled:      !strings.EqualFold(strings.TrimSpace(os.Getenv("OCR_LEARNINGS")), "off"),
 		FeedbackPath: os.Getenv("OCR_LEARNINGS_FEEDBACK"),
 		EmbedURL:     os.Getenv("OCR_EMBED_URL"),
+		EmbedToken:   os.Getenv("OCR_EMBED_TOKEN"),
 		EmbedModel:   os.Getenv("OCR_EMBED_MODEL"),
 	}
 	if c.EmbedURL == "" {

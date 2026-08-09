@@ -1,24 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package main
 
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/open-code-review/open-code-review/internal/agent"
-	"github.com/open-code-review/open-code-review/internal/config/rules"
-	"github.com/open-code-review/open-code-review/internal/config/template"
-	"github.com/open-code-review/open-code-review/internal/config/toolsconfig"
-	"github.com/open-code-review/open-code-review/internal/diff"
-	"github.com/open-code-review/open-code-review/internal/gitcmd"
-	"github.com/open-code-review/open-code-review/internal/llm"
-	"github.com/open-code-review/open-code-review/internal/model"
-	"github.com/open-code-review/open-code-review/internal/stdout"
-	"github.com/open-code-review/open-code-review/internal/telemetry"
-	"github.com/open-code-review/open-code-review/internal/tool"
+	"github.com/alibaba/open-code-review/internal/agent"
+	"github.com/alibaba/open-code-review/internal/config/rules"
+	"github.com/alibaba/open-code-review/internal/config/template"
+	"github.com/alibaba/open-code-review/internal/config/toolsconfig"
+	"github.com/alibaba/open-code-review/internal/diff"
+	"github.com/alibaba/open-code-review/internal/gitcmd"
+	"github.com/alibaba/open-code-review/internal/llm"
+	"github.com/alibaba/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/session"
+	"github.com/alibaba/open-code-review/internal/stdout"
+	"github.com/alibaba/open-code-review/internal/telemetry"
+	"github.com/alibaba/open-code-review/internal/tool"
 )
 
 // commonContext bundles the state that both `ocr review` and `ocr scan`
@@ -35,6 +40,24 @@ type commonContext struct {
 	// true when requireGit was set; may be false when scan accepts non-git
 	// directories.
 	IsGitRepo bool
+}
+
+// resolveMaxTokens applies the per-run CLI override, then the saved setting,
+// and finally the embedded task-template default.
+func resolveMaxTokens(templateDefault int, cfg *Config, cliOverride int) (int, error) {
+	if cliOverride < 0 {
+		return 0, fmt.Errorf("--max-tokens must be a non-negative integer")
+	}
+	if cliOverride > 0 {
+		return cliOverride, nil
+	}
+	if cfg == nil || cfg.MaxTokens == 0 {
+		return templateDefault, nil
+	}
+	if cfg.MaxTokens < 0 {
+		return 0, fmt.Errorf("invalid max_tokens in app config: must be a positive integer")
+	}
+	return cfg.MaxTokens, nil
 }
 
 // loadCommonContext validates the working directory, loads the embedded
@@ -130,19 +153,25 @@ func resolveWorkingDir(input string, requireGit bool) (string, bool, error) {
 type llmRuntime struct {
 	Client       llm.LLMClient
 	Model        string
+	Provider     string // resolved provider name (non-secret label; empty for non-provider endpoints)
 	Endpoint     llm.ResolvedEndpoint
 	PlanToolDefs []llm.ToolDef
 	MainToolDefs []llm.ToolDef
 	Collector    *tool.CommentCollector
 	AppCfg       *Config
+	// RuntimeConfig holds the allowlisted, non-secret runtime settings (protocol,
+	// sanitized endpoint host, language, timeout) derived from the resolved
+	// endpoint and app config, for the run manifest's runtime_config_sha256. It
+	// never carries the token or full URL.
+	RuntimeConfig agent.RuntimeConfig
 }
 
 // loadLLMRuntime loads tool defs from toolConfigPath, reads the app config
 // from the user's default config path (applying the configured language to
 // tpl — defaulting when the config file is absent), resolves the LLM
-// endpoint (honoring modelOverride from --model when non-empty), and
+// endpoint (honoring resolveOpts), and
 // returns the runtime bundle. tpl is mutated in place.
-func loadLLMRuntime(tpl *template.Template, toolConfigPath, modelOverride, repoDir string) (*llmRuntime, error) {
+func loadLLMRuntime(tpl *template.Template, toolConfigPath string, resolveOpts llm.ResolveOptions, repoDirs ...string) (*llmRuntime, error) {
 	toolEntries, err := toolsconfig.Load(toolConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("load tools: %w", err)
@@ -166,12 +195,16 @@ func loadLLMRuntime(tpl *template.Template, toolConfigPath, modelOverride, repoD
 	}
 	tpl.ApplyLanguage(lang)
 
-	ep, err := llm.ResolveEndpointWithModelOverride(cfgPath, modelOverride)
+	ep, err := llm.ResolveEndpointWithOptions(cfgPath, resolveOpts)
 	if err != nil {
 		return nil, fmt.Errorf("resolve LLM endpoint: %w", err)
 	}
-	// codex CLI provider needs repo_dir so its subprocess can scope file ops.
-	if repoDir != "" && ep.Protocol == "codex" {
+	// CLI providers need repo_dir so their subprocess can scope file operations.
+	var repoDir string
+	if len(repoDirs) > 0 {
+		repoDir = repoDirs[0]
+	}
+	if repoDir != "" && (ep.Protocol == llm.ProtocolCodex || ep.Protocol == llm.ProtocolClaude) {
 		if ep.ExtraBody == nil {
 			ep.ExtraBody = make(map[string]any)
 		}
@@ -181,12 +214,35 @@ func loadLLMRuntime(tpl *template.Template, toolConfigPath, modelOverride, repoD
 	return &llmRuntime{
 		Client:       llm.NewLLMClient(ep),
 		Model:        ep.Model,
+		Provider:     ep.Provider,
 		Endpoint:     ep,
 		PlanToolDefs: planToolDefs,
 		MainToolDefs: mainToolDefs,
 		Collector:    tool.NewCommentCollector(),
 		AppCfg:       appCfg,
+		RuntimeConfig: agent.RuntimeConfig{
+			Protocol:     ep.Protocol,
+			EndpointHost: sanitizeEndpointHost(ep.URL),
+			Language:     lang,
+			Timeout:      ep.Timeout,
+		},
 	}, nil
+}
+
+// sanitizeEndpointHost extracts the credential-free host[:port] from a full LLM
+// endpoint URL, dropping scheme, any embedded userinfo, path, query and fragment
+// so no secret material survives into the manifest's runtime_config hash. The
+// host is lowercased for a stable identity (DNS is case-insensitive). An empty
+// or unparseable URL, or one without a host, yields "".
+func sanitizeEndpointHost(rawURL string) string {
+	if strings.TrimSpace(rawURL) == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Host) // u.Host is host[:port]; userinfo lives in u.User
 }
 
 // applyCLIExcludes appends user-supplied --exclude patterns (already split
@@ -264,6 +320,17 @@ type ResultProvider interface {
 	// in JSON output or failure diagnostics. Returns "" when no session was
 	// created.
 	SessionID() string
+	// BudgetExceeded reports whether the aggregate token budget gate stopped the
+	// run before all files were reviewed. It is a diagnostic signal only — it
+	// feeds summary.budget_exceeded and the failure usage record, and never
+	// decides the run's terminal state. The terminal state comes solely from the
+	// manifest's coverage: the stop marks the undispatched items
+	// failed(budget) without recording a run_failure, so it reads as partial
+	// whenever anything was covered.
+	BudgetExceeded() bool
+	// RunManifest returns the frozen v1 coverage result for review runs. Scan
+	// remains legacy and returns nil.
+	RunManifest() *session.RunManifest
 }
 
 type resumeInfoProvider interface {
@@ -284,6 +351,7 @@ func emitRunResult(
 	startTime time.Time,
 	outputFormat, audience string,
 	q *quietHandle,
+	llmIdentity *jsonLLMIdentity,
 ) error {
 	comments = diff.ResolveLineNumbers(comments, ag.Diffs())
 
@@ -294,9 +362,10 @@ func emitRunResult(
 	}
 
 	traceID := telemetry.TraceIDFromContext(ctx)
+	manifest := ag.RunManifest()
 
-	if outputFormat == "json" && len(comments) == 0 && ag.FilesReviewed() == 0 {
-		return outputJSONNoFiles(traceID)
+	if outputFormat == "json" && manifest == nil && len(comments) == 0 && ag.FilesReviewed() == 0 {
+		return outputJSONNoFiles(traceID, llmIdentity)
 	}
 
 	// Agent-text audiences need stdout back before PrintTraceSummary so the
@@ -319,9 +388,9 @@ func emitRunResult(
 		return outputJSONWithWarnings(comments, ag.Warnings(), ag.FilesReviewed(),
 			ag.TotalInputTokens(), ag.TotalOutputTokens(), ag.TotalTokensUsed(),
 			ag.TotalCacheReadTokens(), ag.TotalCacheWriteTokens(), duration,
-			ag.ProjectSummary(), ag.ToolCalls(), traceID, resumeInfo, ag.SessionID())
+			ag.ProjectSummary(), ag.ToolCalls(), traceID, resumeInfo, ag.SessionID(), manifest, ag.BudgetExceeded(), llmIdentity)
 	}
-	outputTextWithWarnings(comments, ag.Warnings())
+	outputTextWithWarnings(comments, ag.Warnings(), manifest)
 	if summary := ag.ProjectSummary(); summary != "" {
 		fmt.Printf("\n\n──────── Project Summary ────────\n\n%s\n", summary)
 	}

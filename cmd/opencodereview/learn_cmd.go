@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package main
 
 import (
@@ -7,10 +10,19 @@ import (
 	"os"
 	"strings"
 
-	"github.com/open-code-review/open-code-review/internal/gitcmd"
-	"github.com/open-code-review/open-code-review/internal/learn"
-	"github.com/open-code-review/open-code-review/internal/llm"
+	"github.com/alibaba/open-code-review/internal/gitcmd"
+	"github.com/alibaba/open-code-review/internal/learn"
+	"github.com/spf13/cobra"
 )
+
+var learnCmd = &cobra.Command{
+	Use:                "learn",
+	Short:              "Manage review feedback learnings",
+	DisableFlagParsing: true,
+	RunE: func(_ *cobra.Command, args []string) error {
+		return runLearn(args)
+	},
+}
 
 // runLearn dispatches `ocr learn <subcommand>`.
 func runLearn(args []string) error {
@@ -60,19 +72,10 @@ func runLearnIngest(args []string) error {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
 
-	cfgPath, err := defaultConfigPath()
-	if err != nil {
-		return err
-	}
-	ep, err := llm.ResolveEndpointWithModelOverride(cfgPath, "")
-	if err != nil {
-		return fmt.Errorf("resolve LLM endpoint: %w", err)
-	}
-
 	gitRunner := gitcmd.New(4)
 	// Ingest-only entry point: setupLearnings performs the ingest as a side
-	// effect; the returned suppressor is irrelevant here and discarded.
-	_ = setupLearnings(context.Background(), resolved, ep.Token, gitRunner)
+	// effect; the returned runtime is irrelevant here and discarded.
+	_ = setupLearnings(context.Background(), resolved, gitRunner)
 	return nil
 }
 

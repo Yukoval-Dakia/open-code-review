@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package tool
 
 import (
@@ -6,8 +9,42 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/model"
 )
+
+const (
+	codeCommentCategoryBug             = "bug"
+	codeCommentCategorySecurity        = "security"
+	codeCommentCategoryPerformance     = "performance"
+	codeCommentCategoryMaintainability = "maintainability"
+	codeCommentCategoryTest            = "test"
+	codeCommentCategoryStyle           = "style"
+	codeCommentCategoryDocumentation   = "documentation"
+	codeCommentCategoryOther           = "other"
+
+	codeCommentSeverityCritical = "critical"
+	codeCommentSeverityHigh     = "high"
+	codeCommentSeverityMedium   = "medium"
+	codeCommentSeverityLow      = "low"
+)
+
+var validCodeCommentCategories = map[string]struct{}{
+	codeCommentCategoryBug:             {},
+	codeCommentCategorySecurity:        {},
+	codeCommentCategoryPerformance:     {},
+	codeCommentCategoryMaintainability: {},
+	codeCommentCategoryTest:            {},
+	codeCommentCategoryStyle:           {},
+	codeCommentCategoryDocumentation:   {},
+	codeCommentCategoryOther:           {},
+}
+
+var validCodeCommentSeverities = map[string]struct{}{
+	codeCommentSeverityCritical: {},
+	codeCommentSeverityHigh:     {},
+	codeCommentSeverityMedium:   {},
+	codeCommentSeverityLow:      {},
+}
 
 // CodeCommentProvider submits review comments to the per-Agent CommentCollector.
 type CodeCommentProvider struct {
@@ -70,12 +107,11 @@ func ParseComments(args map[string]any) ([]model.LlmComment, string) {
 			cm.Thinking = thinking
 		}
 		if category, ok := obj["category"].(string); ok {
-			cm.Category = strings.ToLower(strings.TrimSpace(category))
+			cm.Category = normalizeCodeCommentCategory(category)
 		}
 		if severity, ok := obj["severity"].(string); ok {
-			cm.Severity = strings.ToLower(strings.TrimSpace(severity))
+			cm.Severity = normalizeCodeCommentSeverity(severity)
 		}
-		// JSON numbers decode to float64 in a map[string]any.
 		if confidence, ok := obj["confidence"].(float64); ok {
 			cm.Confidence = confidence
 		}
@@ -90,4 +126,20 @@ func ParseComments(args map[string]any) ([]model.LlmComment, string) {
 		comments = append(comments, cm)
 	}
 	return comments, ""
+}
+
+func normalizeCodeCommentCategory(category string) string {
+	normalized := strings.ToLower(category)
+	if _, ok := validCodeCommentCategories[normalized]; ok {
+		return normalized
+	}
+	return codeCommentCategoryOther
+}
+
+func normalizeCodeCommentSeverity(severity string) string {
+	normalized := strings.ToLower(severity)
+	if _, ok := validCodeCommentSeverities[normalized]; ok {
+		return normalized
+	}
+	return codeCommentSeverityLow
 }

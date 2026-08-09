@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 // Package learn persists OCR's past review comments and their accepted/rejected
 // verdicts ("learnings") so future reviews can be informed by them.
 package learn

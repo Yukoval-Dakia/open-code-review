@@ -1,10 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package scan
 
 import (
 	"reflect"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/model"
 )
 
 func itemList(paths ...string) []model.ScanItem {

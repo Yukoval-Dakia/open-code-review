@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 // Package delegate provides the deterministic "spec" generation for delegation mode,
 // where OCR produces review specifications without calling any LLM.
 package delegate
 
 import (
-	"github.com/open-code-review/open-code-review/internal/config/rules"
+	"github.com/alibaba/open-code-review/internal/config/rules"
 )
 
 // RuleGroup clusters files that share the same resolved rule text.

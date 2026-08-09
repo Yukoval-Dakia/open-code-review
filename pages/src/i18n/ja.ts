@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 import { TranslationKeys } from './types';
 
 export const ja: TranslationKeys = {
@@ -17,6 +20,10 @@ export const ja: TranslationKeys = {
   'hero.terminal': 'ターミナル',
   'hero.copied': 'コピーしました',
   'hero.copyFailed': 'コピー失敗',
+
+  // Error boundary
+  'error.pageLoadFailed': 'ページの読み込みに失敗しました。',
+  'error.reload': '再読み込み',
 
   // Highlights
   'highlights.stat1Value': '20K+',

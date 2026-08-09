@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package learn
 
 import (
@@ -20,10 +23,10 @@ func validVerdict(v Verdict) bool {
 	return v == VerdictAccepted || v == VerdictRejected
 }
 
-// Ingest reads feedbackPath (a JSON array of FeedbackItem), embeds each new,
-// valid item's Body, and appends it to store. Returns how many new learnings
-// were added. A missing file is a clean no-op. An embedding error for one item
-// skips that item (warning to stderr) but does not fail the whole ingest.
+// Ingest reads feedbackPath (a JSON array of FeedbackItem), embeds each new or
+// changed valid item, and upserts it into store. Returns how many learnings were
+// added or updated. A missing file is a clean no-op. An embedding error for one
+// item skips that item but does not fail the whole ingest.
 func Ingest(ctx context.Context, store *LearningStore, emb Embedder, feedbackPath, now string) (int, error) {
 	raw, err := os.ReadFile(feedbackPath)
 	if err != nil {
@@ -36,34 +39,42 @@ func Ingest(ctx context.Context, store *LearningStore, emb Embedder, feedbackPat
 	if err := json.Unmarshal(raw, &items); err != nil {
 		return 0, fmt.Errorf("parse feedback.json: %w", err)
 	}
-	added := 0
+	changed := 0
 	for _, it := range items {
 		if it.CommentID == "" || it.Body == "" || !validVerdict(it.Verdict) {
 			continue
 		}
-		if store.Has(it.CommentID) {
+		current, exists := store.Get(it.CommentID)
+		if exists && current.Body == it.Body && current.Path == it.Path && current.Symbol == it.Symbol && current.Verdict == it.Verdict {
 			continue
 		}
-		vec, err := emb.Embed(ctx, it.Body)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[ocr] learnings: embed failed for comment %s: %v (skipped)\n", it.CommentID, err)
-			continue
+		vec := current.Embedding
+		if !exists || current.Body != it.Body || len(vec) == 0 {
+			vec, err = emb.Embed(ctx, it.Body)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[ocr] learnings: embed failed for comment %s: %v (skipped)\n", it.CommentID, err)
+				continue
+			}
 		}
-		ok, err := store.Append(Learning{
+		createdAt := current.CreatedAt
+		if createdAt == "" {
+			createdAt = now
+		}
+		ok, err := store.Upsert(Learning{
 			CommentID: it.CommentID,
 			Body:      it.Body,
 			Path:      it.Path,
 			Symbol:    it.Symbol,
 			Verdict:   it.Verdict,
 			Embedding: vec,
-			CreatedAt: now,
+			CreatedAt: createdAt,
 		})
 		if err != nil {
-			return added, err
+			return changed, err
 		}
 		if ok {
-			added++
+			changed++
 		}
 	}
-	return added, nil
+	return changed, nil
 }

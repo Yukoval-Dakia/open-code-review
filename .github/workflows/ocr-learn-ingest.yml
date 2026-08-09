@@ -57,12 +57,8 @@ jobs:
 
       - name: Ingest into the learnings store
         env:
-          # Endpoint resolution supplies the token used for embedding calls.
-          OCR_LLM_PROTOCOL: anthropic
-          OCR_LLM_URL: ${{ vars.OCR_LLM_URL }}
-          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
-          OCR_LLM_MODEL: ${{ vars.OCR_LLM_MODEL }}
           OCR_EMBED_URL: ${{ vars.OCR_EMBED_URL }}
+          OCR_EMBED_TOKEN: ${{ secrets.OCR_EMBED_TOKEN }}
           OCR_EMBED_MODEL: ${{ vars.OCR_EMBED_MODEL }}
           OCR_LEARNINGS: on
         run: |

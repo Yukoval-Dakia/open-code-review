@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package main
 
 import (
@@ -6,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/learn"
-	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/learn"
+	"github.com/alibaba/open-code-review/internal/model"
 )
 
 // fakeEmbedder returns a canned vector per text; unknown text errors.
@@ -77,6 +80,19 @@ func TestReflagSuppressorPathGated(t *testing.T) {
 	})
 	if dropped != 0 || len(kept) != 1 {
 		t.Fatalf("cross-file should not suppress: dropped=%d", dropped)
+	}
+}
+
+func TestReflagSuppressorFindsSameFileAfterCloserCrossFileMatch(t *testing.T) {
+	store := newStore(t,
+		learn.Learning{CommentID: "other", Body: "x", Path: "b.go", Verdict: learn.VerdictRejected, Embedding: []float32{1, 0}},
+		learn.Learning{CommentID: "same", Body: "x", Path: "a.go", Verdict: learn.VerdictRejected, Embedding: []float32{0.9, 0.1}},
+	)
+	emb := fakeEmbedder{vecs: map[string][]float32{"same text": {1, 0}}}
+	s := newReflagSuppressor(true, emb, store)
+	kept, dropped := s.apply(context.Background(), []model.LlmComment{{Path: "a.go", Content: "same text"}})
+	if dropped != 1 || len(kept) != 0 {
+		t.Fatalf("same-file qualifying match should suppress after cross-file match: dropped=%d kept=%d", dropped, len(kept))
 	}
 }
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 import React, { useState, useRef, useEffect } from 'react';
 import githubIcon from '../assets/icons/icon-github.svg';
 import langIcon from '../assets/icons/icon-language.svg';
@@ -9,6 +12,7 @@ const LANG_OPTIONS: { value: Language; label: string }[] = [
   { value: 'en', label: 'English' },
   { value: 'zh', label: '中文' },
   { value: 'ja', label: '日本語' },
+  { value: 'ru', label: 'Русский' },
 ];
 
 const Footer: React.FC = () => {

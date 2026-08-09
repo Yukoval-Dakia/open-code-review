@@ -1,11 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package agent
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/llm"
-	"github.com/open-code-review/open-code-review/internal/session"
+	"github.com/alibaba/open-code-review/internal/llm"
+	"github.com/alibaba/open-code-review/internal/session"
 )
 
 func TestStripEmptyPlanBlock(t *testing.T) {

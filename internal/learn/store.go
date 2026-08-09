@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package learn
 
 import (
@@ -52,6 +55,15 @@ func (s *LearningStore) Has(commentID string) bool {
 	return ok
 }
 
+// Get returns the stored learning for commentID.
+func (s *LearningStore) Get(commentID string) (Learning, bool) {
+	i, ok := s.index[commentID]
+	if !ok {
+		return Learning{}, false
+	}
+	return s.entries[i], true
+}
+
 // Len returns the number of stored learnings.
 func (s *LearningStore) Len() int { return len(s.entries) }
 
@@ -59,13 +71,29 @@ func (s *LearningStore) Len() int { return len(s.entries) }
 // evicts the oldest entries beyond the soft cap, and rewrites the file. Returns
 // whether a new entry was added.
 func (s *LearningStore) Append(l Learning) (bool, error) {
-	// Fix 3: reject entries with no CommentID — they can't be deduped.
 	if l.CommentID == "" {
 		return false, nil
 	}
 	if s.Has(l.CommentID) {
 		return false, nil
 	}
+	return s.upsert(l)
+}
+
+// Upsert inserts a new learning or replaces the current state of an existing
+// review comment. Thread verdicts can change after an earlier collection, so
+// final feedback must supersede provisional accepted/rejected state.
+func (s *LearningStore) Upsert(l Learning) (bool, error) {
+	if l.CommentID == "" {
+		return false, nil
+	}
+	if current, ok := s.Get(l.CommentID); ok && learningEqual(current, l) {
+		return false, nil
+	}
+	return s.upsert(l)
+}
+
+func (s *LearningStore) upsert(l Learning) (bool, error) {
 
 	// Snapshot pre-mutation state for rollback on flush failure.
 	prevEntries := make([]Learning, len(s.entries))
@@ -75,7 +103,11 @@ func (s *LearningStore) Append(l Learning) (bool, error) {
 		prevIndex[k] = v
 	}
 
-	s.entries = append(s.entries, l)
+	if i, ok := s.index[l.CommentID]; ok {
+		s.entries[i] = l
+	} else {
+		s.entries = append(s.entries, l)
+	}
 	if s.cap > 0 && len(s.entries) > s.cap {
 		drop := len(s.entries) - s.cap
 		fmt.Fprintf(os.Stderr, "[ocr] learnings store at cap (%d); evicting %d oldest entr(ies)\n", s.cap, drop)
@@ -94,6 +126,18 @@ func (s *LearningStore) Append(l Learning) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func learningEqual(a, b Learning) bool {
+	if a.CommentID != b.CommentID || a.Body != b.Body || a.Path != b.Path || a.Symbol != b.Symbol || a.Verdict != b.Verdict || a.CreatedAt != b.CreatedAt || len(a.Embedding) != len(b.Embedding) {
+		return false
+	}
+	for i := range a.Embedding {
+		if a.Embedding[i] != b.Embedding[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // flush rewrites the whole store atomically (temp file + rename).

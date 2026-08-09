@@ -1,14 +1,45 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const CopyPlugin = require('copy-webpack-plugin');
+const isProduction = process.env.NODE_ENV === 'production';
 
 module.exports = {
-  mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
+  mode: isProduction ? 'production' : 'development',
   entry: './src/index.tsx',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'bundle.js',
-    publicPath: process.env.NODE_ENV === 'production' ? '/open-code-review/' : '/'
+    filename: '[name].[contenthash:8].bundle.js',
+    chunkFilename: '[name].[contenthash:8].chunk.js',
+    publicPath: '/',
+    clean: true
+  },
+  optimization: {
+    runtimeChunk: 'single',
+    splitChunks: {
+      chunks: 'all',
+      cacheGroups: {
+        react: {
+          test: /[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/,
+          name: 'react',
+          priority: 30,
+          enforce: true
+        },
+        three: {
+          test: /[\\/]node_modules[\\/]three[\\/]/,
+          name: 'three',
+          chunks: 'async',
+          priority: 20,
+          enforce: true
+        },
+        mermaid: {
+          test: /[\\/]node_modules[\\/]mermaid[\\/]/,
+          name: 'mermaid',
+          chunks: 'async',
+          priority: 20,
+          enforce: true
+        }
+      }
+    }
   },
   module: {
     rules: [
@@ -19,7 +50,7 @@ module.exports = {
           loader: 'babel-loader',
           options: {
             presets: [
-              ['@babel/preset-react', { development: process.env.NODE_ENV !== 'production' }],
+              ['@babel/preset-react', { development: !isProduction }],
               '@babel/preset-env',
               '@babel/preset-typescript'
             ]
@@ -64,6 +95,13 @@ module.exports = {
     new HtmlWebpackPlugin({
       template: './index.html',
       inject: 'body'
+    }),
+    // SPA fallback: serve the app shell for deep links / refreshes on client-side
+    // routes (BrowserRouter). GitHub Pages returns this for unknown paths.
+    new HtmlWebpackPlugin({
+      template: './index.html',
+      inject: 'body',
+      filename: '404.html'
     }),
     new CopyPlugin({
       patterns: [

@@ -1,16 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/open-code-review/open-code-review/internal/config/rules"
-	"github.com/open-code-review/open-code-review/internal/config/template"
-	"github.com/open-code-review/open-code-review/internal/llm"
-	"github.com/open-code-review/open-code-review/internal/model"
-	"github.com/open-code-review/open-code-review/internal/session"
-	"github.com/open-code-review/open-code-review/internal/tool"
+	"github.com/alibaba/open-code-review/internal/config/rules"
+	"github.com/alibaba/open-code-review/internal/config/template"
+	"github.com/alibaba/open-code-review/internal/llm"
+	"github.com/alibaba/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/session"
+	"github.com/alibaba/open-code-review/internal/tool"
 )
 
 func TestAgent_Getters(t *testing.T) {
@@ -63,6 +68,22 @@ func TestAgent_Getters(t *testing.T) {
 	}
 	if len(a.ToolCalls()) != 0 {
 		t.Errorf("ToolCalls() should be empty initially, got %d", len(a.ToolCalls()))
+	}
+}
+
+func TestAgentFilesReviewedCountsDispatchableDiffs(t *testing.T) {
+	a := New(Args{})
+	a.diffs = []model.Diff{
+		{NewPath: "kept.go", OldPath: "kept.go", Diff: "+kept"},
+		{NewPath: "removed.go", OldPath: "removed.go", Diff: "-removed", IsDeleted: true},
+		{NewPath: "also-kept.go", OldPath: "also-kept.go", Diff: "+more"},
+	}
+
+	if got := a.FilesReviewed(); got != 2 {
+		t.Errorf("FilesReviewed() = %d, want 2", got)
+	}
+	if got := len(a.Diffs()); got != 3 {
+		t.Errorf("Diffs() len = %d, want 3", got)
 	}
 }
 
@@ -412,18 +433,18 @@ func TestExecuteSubtask_EmptyMainTask(t *testing.T) {
 	})
 	a.currentDate = "2025-06-26 10:00"
 
-	completed, skipReason, err := a.executeSubtask(context.Background(), model.Diff{NewPath: "a.go", Diff: "+x", Insertions: 1})
+	completed, stop, err := a.executeSubtask(context.Background(), model.Diff{NewPath: "a.go", Diff: "+x", Insertions: 1})
 	if err == nil {
 		t.Fatal("expected error for empty main_task messages")
 	}
 	if completed {
 		t.Fatal("empty main_task should not complete review")
 	}
-	if skipReason != "" {
-		t.Fatalf("skipReason = %q, want empty on error", skipReason)
+	if stop != nil {
+		t.Fatalf("stop = %+v, want nil on error", stop)
 	}
-	if !strings.Contains(err.Error(), "main_task.messages is empty") {
-		t.Errorf("unexpected error: %v", err)
+	if !errors.Is(err, errMainTaskEmpty) {
+		t.Errorf("expected errMainTaskEmpty sentinel via errors.Is, got: %v", err)
 	}
 }
 
@@ -448,15 +469,21 @@ func TestExecuteSubtask_TokenThresholdExceeded(t *testing.T) {
 	a.currentDate = "2025-06-26 10:00"
 	a.diffs = []model.Diff{{NewPath: "a.go", Diff: strings.Repeat("code ", 200), Insertions: 100}}
 
-	completed, skipReason, err := a.executeSubtask(context.Background(), a.diffs[0])
+	completed, stop, err := a.executeSubtask(context.Background(), a.diffs[0])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if completed {
 		t.Fatal("token-threshold skip should not complete review")
 	}
-	if skipReason == "" {
-		t.Fatal("expected skip reason for token-threshold skip")
+	if stop == nil {
+		t.Fatal("expected structured stop for token-threshold skip")
+	}
+	if stop.class != session.FailureBudget {
+		t.Errorf("stop.class = %q, want %q", stop.class, session.FailureBudget)
+	}
+	if stop.checkpoint == "" {
+		t.Error("expected checkpoint text for token-threshold skip")
 	}
 
 	warnings := a.Warnings()
@@ -526,15 +553,15 @@ func TestExecuteSubtask_WithPlanPhase(t *testing.T) {
 	a.currentDate = "2025-06-26 10:00"
 	a.diffs = []model.Diff{{NewPath: "main.go", OldPath: "main.go", Diff: "+new code", Insertions: 5}}
 
-	completed, skipReason, err := a.executeSubtask(context.Background(), a.diffs[0])
+	completed, stop, err := a.executeSubtask(context.Background(), a.diffs[0])
 	if err != nil {
 		t.Fatalf("executeSubtask: %v", err)
 	}
 	if !completed {
 		t.Fatal("expected completed review")
 	}
-	if skipReason != "" {
-		t.Fatalf("skipReason = %q, want empty on completed review", skipReason)
+	if stop != nil {
+		t.Fatalf("stop = %+v, want nil on completed review", stop)
 	}
 }
 
@@ -556,15 +583,15 @@ func TestExecuteSubtask_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	completed, skipReason, err := a.executeSubtask(ctx, model.Diff{NewPath: "a.go", Diff: "+x", Insertions: 1})
+	completed, stop, err := a.executeSubtask(ctx, model.Diff{NewPath: "a.go", Diff: "+x", Insertions: 1})
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
 	if completed {
 		t.Fatal("cancelled context should not complete review")
 	}
-	if skipReason != "" {
-		t.Fatalf("skipReason = %q, want empty on error", skipReason)
+	if stop != nil {
+		t.Fatalf("stop = %+v, want nil on error", stop)
 	}
 }
 
@@ -590,7 +617,6 @@ func TestExecuteReviewFilter_WithTimeout(t *testing.T) {
 		CommentCollector: collector,
 		Template: template.Template{
 			ReviewFilterTask: &template.LlmConversation{
-				Timeout:  30,
 				Messages: []template.ChatMessage{{Role: "user", Content: "{{comments}} {{path}} {{diff}}"}},
 			},
 			MaxTokens:           10000,
@@ -625,9 +651,13 @@ func TestDispatchSubtasks_AllFilteredBySize(t *testing.T) {
 		{NewPath: "big.go", Diff: strings.Repeat("word ", 500), Insertions: 100},
 	}
 
-	_, err := a.dispatchSubtasks(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "all diffs filtered out") {
-		t.Errorf("expected 'all diffs filtered out' error, got: %v", err)
+	// All diffs oversized ⇒ nothing selected ⇒ skipped run, not a hard error.
+	comments, err := a.dispatchSubtasks(context.Background())
+	if err != nil {
+		t.Errorf("all-filtered-by-size should be a skipped run (nil error), got: %v", err)
+	}
+	if len(comments) != 0 {
+		t.Errorf("expected no comments for a skipped run, got %d", len(comments))
 	}
 }
 
@@ -653,5 +683,38 @@ func TestDispatchSubtasks_AllFailed(t *testing.T) {
 	_, err := a.dispatchSubtasks(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "failed") {
 		t.Errorf("expected failure error, got: %v", err)
+	}
+}
+
+// classifyItemError maps a per-file review error to a coverage FailureClass and a
+// static, leak-free reason. The mapping must recognize the sentinels through
+// wrapping (errors.Is), and the reason must never echo the raw error text.
+func TestClassifyItemError(t *testing.T) {
+	const secret = "token=sk-LEAKED-SECRET absolute /home/alice/x"
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantClass session.FailureClass
+	}{
+		{"deadline", context.DeadlineExceeded, session.FailureTimeout},
+		{"deadline_wrapped", fmt.Errorf("review %s: %w", secret, context.DeadlineExceeded), session.FailureTimeout},
+		{"cancelled", context.Canceled, session.FailureCancelled},
+		{"cancelled_wrapped", fmt.Errorf("aborted %s: %w", secret, context.Canceled), session.FailureCancelled},
+		{"main_task_empty", errMainTaskEmpty, session.FailureConfiguration},
+		{"main_task_empty_wrapped", fmt.Errorf("subtask %s: %w", secret, errMainTaskEmpty), session.FailureConfiguration},
+		{"default_provider", errors.New(secret), session.FailureProvider},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			class, reason := classifyItemError(tc.err)
+			if class != tc.wantClass {
+				t.Errorf("class = %q, want %q", class, tc.wantClass)
+			}
+			if reason == "" {
+				t.Error("reason is empty; a static safe reason is required")
+			}
+			if strings.Contains(reason, "sk-LEAKED-SECRET") || strings.Contains(reason, "/home/alice") {
+				t.Errorf("reason leaked raw error text: %q", reason)
+			}
+		})
 	}
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package viewer
 
 import (
@@ -109,6 +112,21 @@ func splitBindHost(addr string) string {
 	}
 	if host, _, err := net.SplitHostPort(addr); err == nil {
 		return host
+	}
+	return addr
+}
+
+// DisplayAddr rewrites a wildcard listen address (empty host, 0.0.0.0, or ::)
+// to a localhost form so printed URLs are always openable in a browser.
+// Non-wildcard addresses are returned unchanged.
+func DisplayAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		return net.JoinHostPort("localhost", port)
 	}
 	return addr
 }

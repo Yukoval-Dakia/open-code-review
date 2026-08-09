@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
 package diff
 
 import (
 	"strings"
 
-	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/model"
 )
 
 // ResolveLineNumbers populates StartLine/EndLine on each comment by matching
@@ -228,7 +231,7 @@ func splitAndNormalize(code string) []string {
 }
 
 // normalizeLine removes leading/trailing whitespace and strips any leading
-// '+' or '-' diff marker (mirrors Java's processTargetLineCode).
+// '+' or '-' diff marker.
 func normalizeLine(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "+")
